@@ -62,8 +62,12 @@ func signupFlow(s Services) flowchassis.Flow {
 			Name: "provision_storage",
 			Do: func(c *flowchassis.Ctx) error {
 				id, err := s.Storage.Create(c, "create bucket, plan "+input(c).Plan)
+				if errors.Is(err, errNoRegion) {
+					// Retrying won't help: compensate now.
+					return flowchassis.Permanent(err)
+				}
 				if err != nil {
-					return err
+					return err // anything else: try again
 				}
 				c.Set("bucket", []byte(id))
 				return nil
@@ -101,12 +105,14 @@ func faults(s Services) {
 	}
 	s.Storage.Fail = func(c *flowchassis.Ctx, what string) error {
 		if c.Run == "signup-cy" && !c.Undoing {
-			// Permanent: retrying won't help, so compensate now.
-			return flowchassis.Permanent(errors.New("no storage region offers plan enterprise-eu"))
+			return fmt.Errorf("%w enterprise-eu", errNoRegion)
 		}
 		return nil
 	}
 }
+
+// errNoRegion is the storage provider's answer for a plan no region offers.
+var errNoRegion = errors.New("no storage region offers plan")
 
 var signups = []Signup{
 	{"ana@example.com", "free"},

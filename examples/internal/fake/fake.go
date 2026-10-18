@@ -150,3 +150,24 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 	defer s.mu.Unlock()
 	return s.w.Write(p)
 }
+
+// Attempts counts the attempts a journal records for one step of one run:
+// "begin" records, or "ubegin" for its undo. Tests use it to check that a
+// fault really was retried, or really wasn't.
+func Attempts(journal, run, step string, undo bool) (int, error) {
+	recs, _, err := flowchassis.ReadJournal(journal)
+	if err != nil {
+		return 0, err
+	}
+	kind := "begin"
+	if undo {
+		kind = "ubegin"
+	}
+	n := 0
+	for _, r := range recs {
+		if r.Type == kind && r.Run == run && r.Step == step {
+			n++
+		}
+	}
+	return n, nil
+}

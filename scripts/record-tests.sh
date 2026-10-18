@@ -95,6 +95,7 @@ size() { wc -c < "$1" | tr -d ' '; }
 	echo "what the library adds: $(( $(size "$work/withlib") - $(size "$work/hello") )) bytes"
 	echo "library source, without tests: $(cat $(ls *.go | grep -v _test.go) | wc -l | tr -d ' ') lines in $(ls *.go | grep -v _test.go | wc -l | tr -d ' ') files"
 	echo "tests: $(cat *_test.go cmd/flowchassis/*_test.go | wc -l | tr -d ' ') lines; test functions: $(grep -h '^func Test' *_test.go cmd/flowchassis/*_test.go | grep -vc TestMain)"
+	echo "example programs: $(ls -d examples/*/main.go | wc -l | tr -d ' '), $(cat examples/*/*.go examples/internal/*/*.go | wc -l | tr -d ' ') lines with their tests and fakes; test functions: $(grep -h '^func Test' examples/*/*_test.go | grep -vc TestMain)"
 	echo "modules required besides the standard library: $(go list -m all | tail -n +2 | wc -l | tr -d ' ')"
 	go list -m all
 } > "$out/sizes.txt"

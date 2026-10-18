@@ -10,6 +10,12 @@
 //
 //	go run ./examples/media
 //	(press Ctrl-C while it transcodes, then run the same command again)
+//
+// To kill it from another terminal instead, build it first, so the signal
+// reaches the program itself and not the go command:
+//
+//	go build -o media ./examples/media && ./media
+//	kill -9 <its pid>
 package main
 
 import (
@@ -162,6 +168,13 @@ func run(dir string, segmentTime time.Duration, out io.Writer) ([]flowchassis.Ru
 		return nil, err
 	}
 	defer e.Close()
+	// Before Register, runs of this flow in the journal wait as they were
+	// left, so this reports where the last process got to.
+	for _, v := range videos {
+		if r, err := e.Get(v.Name); err == nil && !r.Status.Finished() {
+			fmt.Fprintf(out, "%s was cut off at %s; carrying on (%s of %d segments done)\n", v.Name, r.Step, orZero(r.State["segment"]), v.Segments)
+		}
+	}
 	if err := e.Register(mediaFlow(m)); err != nil {
 		return nil, err
 	}
@@ -169,10 +182,6 @@ func run(dir string, segmentTime time.Duration, out io.Writer) ([]flowchassis.Ru
 	// Start both. After a crash, Start finds each run in the journal (the
 	// engine has already resumed it) and returns its ID.
 	for _, v := range videos {
-		if r, err := e.Get(v.Name); err == nil && !r.Status.Finished() {
-			seg, _ := r.State["segment"]
-			fmt.Fprintf(out, "%s was cut off at %s; carrying on (%s of %d segments done)\n", v.Name, r.Step, orZero(seg), v.Segments)
-		}
 		b, _ := json.Marshal(v)
 		if _, err := e.Start("media", v.Name, b); err != nil {
 			return nil, err

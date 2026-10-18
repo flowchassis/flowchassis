@@ -86,6 +86,10 @@ func provisionFlow(cloud Cloud) flowchassis.Flow {
 			Name: "issue_cert",
 			Do: func(c *flowchassis.Ctx) error {
 				cert, err := cloud.CA.Create(c, "certificate for "+site(c).Domain)
+				if errors.Is(err, errCAARefused) {
+					// A DNS policy won't change on a retry.
+					return flowchassis.Permanent(err)
+				}
 				if err != nil {
 					return err
 				}
@@ -103,7 +107,7 @@ func provisionFlow(cloud Cloud) flowchassis.Flow {
 			},
 			// A VM takes a while to boot: keep checking, waiting longer
 			// each time, for up to about half a minute.
-			Retry: flowchassis.RetryPolicy{MaxAttempts: 8, Backoff: 100 * time.Millisecond, Multiplier: 2, MaxBackoff: 5 * time.Second},
+			Retry: flowchassis.RetryPolicy{MaxAttempts: 12, Backoff: 100 * time.Millisecond, Multiplier: 2, MaxBackoff: 5 * time.Second},
 		},
 	}}
 }
@@ -119,7 +123,7 @@ func faults(cloud Cloud) {
 	}
 	cloud.CA.Fail = func(c *flowchassis.Ctx, what string) error {
 		if !c.Undoing && !strings.HasSuffix(what, ".com") {
-			return flowchassis.Permanent(errors.New("CAA record forbids this CA for the domain"))
+			return errCAARefused
 		}
 		return nil
 	}
@@ -130,6 +134,10 @@ func faults(cloud Cloud) {
 		return nil
 	}
 }
+
+// errCAARefused is the CA's answer when the domain's CAA record names
+// another CA.
+var errCAARefused = errors.New("CAA record forbids this CA for the domain")
 
 var sites = []Site{
 	{"shop.example.com", "small"},

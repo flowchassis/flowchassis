@@ -5,6 +5,7 @@ package main
 
 import (
 	"io"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -40,6 +41,29 @@ func TestProvision(t *testing.T) {
 	}
 	if string(legacy.State["vm"]) != "compute-3" || string(legacy.State["dns"]) != "dns-3" {
 		t.Errorf("legacy state %v: a person needs the VM and record IDs", legacy.State)
+	}
+
+	// The faults really fired: three health checks while the VM booted, one
+	// try at each refused certificate, three at legacy's failing undo.
+	j := filepath.Join(dir, "provision.journal")
+	for _, c := range []struct {
+		run, step string
+		undo      bool
+		want      int
+	}{
+		{"shop.example.com", "health_check", false, 3},
+		{"blog.example.net", "issue_cert", false, 1},
+		{"legacy.example.org", "issue_cert", false, 1},
+		{"legacy.example.org", "add_dns", true, 3},
+		{"legacy.example.org", "create_vm", true, 0},
+	} {
+		n, err := fake.Attempts(j, c.run, c.step, c.undo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != c.want {
+			t.Errorf("%s %s (undo %v): %d attempts, want %d", c.run, c.step, c.undo, n, c.want)
+		}
 	}
 
 	compute := strings.Join(fake.Effects(dir, "compute"), "\n")

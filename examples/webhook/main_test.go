@@ -5,6 +5,7 @@ package main
 
 import (
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -31,13 +32,23 @@ func TestWebhook(t *testing.T) {
 	// Acme: two 503s and a 200, which also means the signature checked out.
 	// Globex: one 410, no retries. Initech: all six attempts.
 	for path, n := range map[string]int{"/acme": 3, "/globex": 1, "/initech": 6} {
-		if recv.hits[path] != n {
-			t.Errorf("%s got %d requests, want %d", path, recv.hits[path], n)
+		if got := recv.Hits(path); got != n {
+			t.Errorf("%s got %d requests, want %d", path, got, n)
 		}
 	}
 	dead := strings.Join(fake.Effects(dir, "deadletter"), "\n")
 	if !strings.Contains(dead, "evt-1001-globex") || !strings.Contains(dead, "evt-1001-initech") || strings.Contains(dead, "acme") {
 		t.Errorf("dead-letter queue:\n%s", dead)
+	}
+	// The signing secrets never reach the journal.
+	recs, _, err := flowchassis.ReadJournal(filepath.Join(dir, "webhook.journal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range recs {
+		if strings.Contains(string(r.Input), "secret") {
+			t.Fatalf("a signing secret is in the journal: %s", r.Input)
+		}
 	}
 	outbox := strings.Join(fake.Effects(dir, "outbox"), "\n")
 	if strings.Count(outbox, " delivered evt") != 1 || !strings.Contains(outbox, "delivered evt-1001-acme") {

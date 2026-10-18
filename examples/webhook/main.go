@@ -40,11 +40,12 @@ import (
 type Delivery struct {
 	Customer string          `json:"customer"`
 	URL      string          `json:"url"`
-	Secret   string          `json:"secret"`
 	Event    json.RawMessage `json:"event"`
 }
 
-func webhookFlow(outbox, deadLetter *fake.Service, client *http.Client) flowchassis.Flow {
+// The input is kept in the journal, so the signing secrets stay out of it:
+// the sign step looks the customer's secret up when it runs.
+func webhookFlow(outbox, deadLetter *fake.Service, client *http.Client, secrets map[string]string) flowchassis.Flow {
 	delivery := func(c *flowchassis.Ctx) Delivery {
 		var d Delivery
 		json.Unmarshal(c.Input(), &d)
@@ -65,7 +66,11 @@ func webhookFlow(outbox, deadLetter *fake.Service, client *http.Client) flowchas
 			Name: "sign",
 			Do: func(c *flowchassis.Ctx) error {
 				d := delivery(c)
-				mac := hmac.New(sha256.New, []byte(d.Secret))
+				secret, ok := secrets[d.Customer]
+				if !ok {
+					return flowchassis.Permanent(fmt.Errorf("no signing secret for %s", d.Customer))
+				}
+				mac := hmac.New(sha256.New, []byte(secret))
 				mac.Write(d.Event)
 				c.Set("signature", []byte("sha256="+hex.EncodeToString(mac.Sum(nil))))
 				return nil
@@ -117,6 +122,13 @@ type Receivers struct {
 	hits  map[string]int       // requests per endpoint
 	first map[string]time.Time // each endpoint's first request
 	out   io.Writer
+}
+
+// Hits returns how many requests an endpoint got.
+func (rc *Receivers) Hits(path string) int {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	return rc.hits[path]
 }
 
 func (rc *Receivers) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -185,7 +197,8 @@ func run(dir string, out io.Writer) ([]flowchassis.RunInfo, *Receivers, error) {
 	}
 	defer e.Close()
 	client := &http.Client{Timeout: 5 * time.Second}
-	if err := e.Register(webhookFlow(outbox, deadLetter, client)); err != nil {
+	secrets := map[string]string{"acme": "secret-acme", "globex": "secret-globex", "initech": "secret-initech"}
+	if err := e.Register(webhookFlow(outbox, deadLetter, client, secrets)); err != nil {
 		return nil, nil, err
 	}
 
@@ -195,7 +208,6 @@ func run(dir string, out io.Writer) ([]flowchassis.RunInfo, *Receivers, error) {
 		d, _ := json.Marshal(Delivery{
 			Customer: customer,
 			URL:      base + "/" + customer,
-			Secret:   "secret-" + customer,
 			Event:    json.RawMessage(`{"type":"order.paid","order":"1001","amount":4200}`),
 		})
 		fmt.Fprintf(out, "%s:\n", id)

@@ -5,6 +5,7 @@ package main
 
 import (
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -43,6 +44,22 @@ func TestSignup(t *testing.T) {
 	}
 	if n := len(fake.Effects(dir, "mail")); n != 2 {
 		t.Errorf("%d welcome emails, want 2: Ben's timeouts are retried, and sent once", n)
+	}
+
+	// The faults really fired: Ben's email took three attempts, and Cy's
+	// refused plan was not retried.
+	j := filepath.Join(dir, "signup.journal")
+	for _, c := range []struct {
+		run, step string
+		want      int
+	}{{"signup-ben", "send_welcome", 3}, {"signup-cy", "provision_storage", 1}, {"signup-ana", "send_welcome", 1}} {
+		n, err := fake.Attempts(j, c.run, c.step, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != c.want {
+			t.Errorf("%s %s: %d attempts, want %d", c.run, c.step, n, c.want)
+		}
 	}
 
 	// Running the program again over the same journal starts nothing new and
