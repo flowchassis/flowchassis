@@ -228,6 +228,7 @@ type Report struct {
 	Repeated     int      `json:"repeated"`          // effects done again after a kill landed between the effect and its checkpoint
 	RepeatedUndo int      `json:"repeated_undos"`    // the part of Repeated that were undos
 	Interrupted  int      `json:"interrupted_steps"` // step attempts a kill cut off: begun in the journal, never done or failed
+	GaveUp       int      `json:"gave_up"`           // runs whose step kept being cut off until MaxAttempts, so they compensated
 	InterruptedU int      `json:"interrupted_undos"` // the same for undo attempts
 	Retries      int      `json:"retries"`           // failed attempts that were retried
 	JournalBytes int64    `json:"journal_bytes"`     // journal size at the end
@@ -345,6 +346,10 @@ func Verify(dir string, n int, r *Report) {
 	}
 	attempts := map[string][]*attempt{}
 	open := map[string]*attempt{}
+	// Runs where one step was cut off by kills MaxAttempts times: the engine
+	// gives up and compensates, as the contract says it must.
+	gaveUp := map[string]bool{}
+	gaveUpStep := map[string]string{} // the step it gave up on
 	p := len(r.Problems)
 	for i := range recs {
 		rec := &recs[i]
@@ -375,6 +380,10 @@ func Verify(dir string, n int, r *Report) {
 			attempts[rec.Run] = append(attempts[rec.Run], a)
 			open[rec.Run] = a
 		case "done", "udone", "fail", "ufail", "yield", "uyield":
+			if rec.Final && strings.HasPrefix(rec.Error, "gave up after") {
+				gaveUp[rec.Run] = true
+				gaveUpStep[rec.Run] = rec.Step
+			}
 			if cur == nil {
 				// A final failure without an attempt is a crash loop giving
 				// up; anything else is out of place.
@@ -407,7 +416,7 @@ func Verify(dir string, n int, r *Report) {
 		last := map[string]*attempt{}
 		for _, a := range list {
 			k := a.kind + " " + a.step
-			if prev := last[k]; prev != nil && a.number <= prev.number && prev.end != "yield" && prev.end != "done" && prev.end != "udone" {
+			if prev := last[k]; prev != nil && a.number <= prev.number && prev.end != "yield" && prev.end != "done" {
 				problem("%s: %s attempt %d after attempt %d", id, k, a.number, prev.number)
 			}
 			last[k] = a
@@ -443,14 +452,15 @@ func Verify(dir string, n int, r *Report) {
 	for i := 1; i <= n; i++ {
 		id := RunID(i)
 		want := flowchassis.Completed
-		if ShipFails(id) {
+		if ShipFails(id) || gaveUp[id] {
 			want = flowchassis.Compensated
 		}
 		if got := byRun[id].Status; got != want {
 			problem("%s ended %s, not %s", id, got, want)
 		}
 	}
-	check("each order ended the way its own rules say: shipped orders completed, refused ones compensated", p)
+	r.GaveUp = len(gaveUp)
+	check("each order ended the way its own rules say: shipped orders completed, refused ones and crash loops that gave up compensated", p)
 
 	// Every ledger line belongs to an attempt the journal recorded: same
 	// run, step and attempt number. Each attempt leaves at most one line.
@@ -504,14 +514,30 @@ func Verify(dir string, n int, r *Report) {
 		info := byRun[id]
 		var wantDo, wantUndo []string
 		refused := ShipFails(id)
-		if refused {
+		switch {
+		case gaveUp[id]:
+			// It stopped wherever the crash loop was: what it completed is
+			// done, and the completed steps that have an undo are undone.
+			wantDo = info.Done
+			refused = refused && contains(info.Done, "receipt") && len(lines[key{"try", "ship", id}]) > 0
+			for i := len(info.Done) - 1; i >= 0; i-- {
+				if info.Done[i] == "reserve" || info.Done[i] == "charge" || info.Done[i] == "ship" {
+					wantUndo = append(wantUndo, info.Done[i])
+				}
+			}
+		case refused:
 			wantDo = []string{"reserve", "charge", "receipt"}
 			wantUndo = []string{"charge", "reserve"}
-		} else {
+		default:
 			wantDo = Steps
 		}
 		for _, s := range Steps {
 			has := len(lines[key{"do", s, id}]) > 0
+			// A step given up on never completed, so it isn't undone, but
+			// attempts that kills cut off after their effect leave lines.
+			if has && gaveUp[id] && s == gaveUpStep[id] {
+				continue
+			}
 			if has != contains(wantDo, s) {
 				problem("%s: ledger has do %s = %v, want %v", id, s, has, !has)
 			}

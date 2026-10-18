@@ -63,6 +63,9 @@ type Engine struct {
 	closed   bool // Close has stopped the workers; no more writes
 	stopErr  error
 
+	closeOnce sync.Once
+	closeErr  error
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -269,11 +272,17 @@ func (e *Engine) Wait(ctx context.Context, id string) (RunInfo, error) {
 		return RunInfo{}, fmt.Errorf("%w: %q", ErrNotFound, id)
 	}
 	ch := r.finished
-	info := r.info()
 	e.mu.Unlock()
+	// Read the run only after the channel says it finished, so what is
+	// returned is the finished run.
+	get := func() RunInfo {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return r.info()
+	}
 	select {
 	case <-ch:
-		return info, nil
+		return get(), nil
 	default:
 	}
 	select {
@@ -281,14 +290,12 @@ func (e *Engine) Wait(ctx context.Context, id string) (RunInfo, error) {
 	case <-ctx.Done():
 	case <-e.ctx.Done():
 	}
-	e.mu.Lock()
-	info = r.info()
-	e.mu.Unlock()
 	select {
 	case <-ch:
-		return info, nil
+		return get(), nil
 	default:
 	}
+	info := get()
 	if ctx.Err() != nil {
 		return info, ctx.Err()
 	}
@@ -391,11 +398,14 @@ func (e *Engine) Compact(dropFinishedBefore time.Time) error {
 // attempt doesn't count; it runs again when the journal is next opened. A
 // step that completes anyway is recorded. Close waits for them to return.
 func (e *Engine) Close() error {
+	// The first call shuts down; any other, at the same time or later, waits
+	// for it and returns its result.
+	e.closeOnce.Do(func() { e.closeErr = e.shutdown() })
+	return e.closeErr
+}
+
+func (e *Engine) shutdown() error {
 	e.mu.Lock()
-	if e.closed || (e.closing && e.stopErr == nil) {
-		e.mu.Unlock()
-		return nil
-	}
 	e.closing = true
 	e.cancel()
 	e.cond.Broadcast()
@@ -513,6 +523,7 @@ func (e *Engine) flush(batch []*pending) {
 	// the records ahead of it in the batch.
 	started := map[string]bool{}
 	ended := map[string]bool{}
+	canceled := map[string]bool{}
 	var ok []*pending
 	var frames []byte
 	for _, p := range batch {
@@ -529,6 +540,10 @@ func (e *Engine) flush(batch []*pending) {
 			err = fmt.Errorf("%w: %q", ErrNotFound, id)
 		case ended[id] || (r != nil && r.Status.Finished()):
 			err = fmt.Errorf("%w: %q", ErrFinished, id)
+		case p.rec.Type == recEnd && p.rec.Status == Completed && (canceled[id] || (r != nil && r.Cancel)):
+			// A cancel got in after the last step: the run compensates
+			// instead. The worker sees the cancel on its next pass.
+			err = errCanceledRun
 		}
 		if err != nil {
 			p.done <- err
@@ -536,6 +551,9 @@ func (e *Engine) flush(batch []*pending) {
 		}
 		if endsRun(p.rec) {
 			ended[id] = true
+		}
+		if p.rec.Type == recCancel {
+			canceled[id] = true
 		}
 		ok = append(ok, p)
 		frames = append(frames, p.frame...)
@@ -556,8 +574,11 @@ func (e *Engine) flush(batch []*pending) {
 	for i, p := range ok {
 		r, err := apply(e.runs, p.rec)
 		if err != nil {
-			// The checks above should make this impossible. Stop rather than
-			// act on memory that no longer matches the journal.
+			// Unreachable with the checks above: every record the engine
+			// writes is one apply accepts for a run in this state. If it
+			// ever happened the record is on disk and replay would refuse
+			// it too, so stop rather than act on memory that no longer
+			// matches the journal.
 			e.mu.Unlock()
 			e.stop(fmt.Errorf("applying a written record: %w", err))
 			err = e.Err()
@@ -714,7 +735,7 @@ func (e *Engine) stepOne(r *run, d *flowDef) bool {
 	err := call(step.Do, c)
 	e.clearCancel(r)
 
-	if err != nil && e.ctx.Err() != nil {
+	if err != nil && e.ctx.Err() != nil && cutByClose(err) {
 		// Close cut the attempt off. It doesn't count, and runs again after
 		// the next Open.
 		e.commit(&Record{Type: recYield, Run: r.id, Step: step.Name, Seq: seq, Attempt: attempt})
@@ -794,7 +815,7 @@ func (e *Engine) undoOne(r *run, d *flowDef) bool {
 		return false
 	}
 	err := call(step.Undo, c)
-	if err != nil && e.ctx.Err() != nil {
+	if err != nil && e.ctx.Err() != nil && cutByClose(err) {
 		e.commit(&Record{Type: recUYield, Run: r.id, Step: step.Name, Seq: done.Seq, Attempt: attempt})
 		return false
 	}
@@ -809,6 +830,16 @@ func (e *Engine) undoOne(r *run, d *flowDef) bool {
 	e.commit(&Record{Type: recUFail, Run: r.id, Step: step.Name, Seq: done.Seq, Attempt: attempt, Error: err.Error(), RetryAt: &at})
 	return false
 }
+
+// cutByClose reports whether a step's error came from its context being
+// canceled, rather than from a failure of its own.
+func cutByClose(err error) bool {
+	return !IsPermanent(err) && errors.Is(err, context.Canceled)
+}
+
+// errCanceledRun is the writer's answer to a run ending as completed after
+// a cancel was recorded.
+var errCanceledRun = errors.New("flowchassis: run was canceled")
 
 func (e *Engine) clearCancel(r *run) {
 	e.mu.Lock()

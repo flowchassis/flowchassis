@@ -25,13 +25,16 @@ format it doesn't know.
 Records are read from the start. A record whose checksum fails, whose length
 is zero or too big, or that is cut short, ends the read:
 
-- It is a torn write from a crash, and is cut off, only if nothing whole
-  follows it: fewer than 8 bytes are left, or everything from there on is
-  zeros, or the frame has a plausible length that runs to or past the end of
-  the file and no checksum-valid frame starts anywhere after it. The bytes cut
-  off are appended to `JOURNAL.torn` and flushed before the journal is cut.
+- It is a torn write from a crash, and is cut off, only if no record with a
+  good checksum starts anywhere after it, and it shows the marks of a write
+  that didn't finish: fewer than 8 bytes left, a zero length, a frame that
+  runs past the end of the file, or zero bytes inside its payload. This
+  covers a group commit (several records in one write) that reached the disk
+  only in part. The bytes cut off are appended to `JOURNAL.torn` and flushed
+  before the journal is cut.
 - Otherwise the file is damaged, and reading fails with `ErrCorrupt`. Nothing
-  after the damage is used, and the file isn't changed.
+  after the damage is used, and the file isn't changed. A last record that is
+  whole but fails its checksum counts as damage.
 
 A file shorter than the header that is the start of it, or a file of zeros,
 is a new journal whose header a crash cut short: it opens as empty, with the

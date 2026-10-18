@@ -19,15 +19,18 @@ together.
    memory gets ahead of the journal. Opening the journal again resumes from
    its last good record.
 4. A write torn by a crash at the end of the journal is cut off when the
-   journal is opened, and the cut bytes are kept in `JOURNAL.torn`. A tear is
-   recognized only when nothing whole follows it: less than a frame header,
-   zeros, or the start of a frame that runs to the end of the file, with no
-   checksum-valid frame anywhere after. Anything else is damage, and `Open`
-   fails with `ErrCorrupt` without changing the file. The engine never skips
-   damaged records to reach later ones. (A power cut that leaves a later part
-   of the last write on disk but not an earlier part looks like damage, and is
-   refused rather than guessed at.) A journal whose header a crash cut short,
-   or left as zeros, opens as empty, with the stray bytes kept the same way.
+   journal is opened, and the cut bytes are kept in `JOURNAL.torn`. A bad
+   record is a tear only when no record with a good checksum starts anywhere
+   after it, and it shows the marks of a write that didn't finish: less than
+   a frame header left, a zero length, a frame that runs past the end of the
+   file, or zero bytes inside its payload (encoded records never hold one).
+   That covers a group-committed write whose later records, or later pages,
+   never reached the disk; such a write was never acknowledged. Anything else
+   is damage, and `Open` fails with `ErrCorrupt` without changing the file:
+   including a last record that is whole but fails its checksum, which may
+   have been acknowledged. The engine never skips damaged records to reach
+   later ones. A journal whose header a crash cut short, or left as zeros,
+   opens as empty, with the stray bytes kept the same way.
 5. The writer checks every record against the runs before writing it: a
    record for a run that has finished, or that compaction dropped, is never
    written. `Cancel` answers `ErrFinished` or `ErrNotFound` in that case.
@@ -60,8 +63,10 @@ together.
 13. Attempts count across restarts. An attempt cut off by a crash counts, so a
     step that brings the process down every time gives up at `MaxAttempts`
     and the run compensates, without the step running again. An attempt cut
-    off by `Close`, where the step returns an error because its context was
-    canceled, is given back with a yield record and doesn't count.
+    off by `Close`, where the step returns an error wrapping
+    `context.Canceled` (and not marked `Permanent`), is given back with a
+    yield record and doesn't count. Any other error during `Close` is
+    recorded as a failure as usual.
 
 ## Compensation
 
@@ -88,31 +93,34 @@ together.
     `Compact` dropped is no longer held, so its ID can be started again: keep
     finished runs as long as callers might retry a `Start`.
 20. `Cancel` writes a cancel record before it returns, so a cancel survives a
-    crash. A run waiting to retry goes to compensation at once. A finished run
-    gives `ErrFinished`.
-21. `Wait` returns a finished run even after `Close`.
+    crash. When it returns nil, the run compensates: even if its last step
+    completed just before, the run doesn't end completed. A run waiting to
+    retry goes to compensation at once. A finished run gives `ErrFinished`.
+21. `Close` can be called more than once, from any goroutine; every call
+    waits for the one shutdown and returns its result.
+22. `Wait` returns the run as it finished, even after `Close`.
 
 ## Flows and versions
 
-22. Runs resume by flow name and step name. A run whose flow isn't registered
+23. Runs resume by flow name and step name. A run whose flow isn't registered
     waits, unchanged, until it is. A run whose current step was renamed or
     removed fails for good and compensates. A completed step whose name is gone
     from the flow can't be undone, so the run ends `failed`.
-23. The journal records the next step when a step completes, so changing the
+24. The journal records the next step when a step completes, so changing the
     order of steps affects runs only from their next step on.
 
 ## Files and processes
 
-24. `Open` takes an exclusive lock on `JOURNAL.lock`. A second `Open` of the
+25. `Open` takes an exclusive lock on `JOURNAL.lock`. A second `Open` of the
     same journal, from any process, fails with `ErrLocked`. The operating
     system releases the lock when the process ends, however it ends. (On
     Solaris, AIX and systems without `flock` or `LockFileEx`, there is no lock:
     don't open one journal twice there.)
-25. `ReadJournal`, and the `runs`, `show` and `check` commands built on it,
+26. `ReadJournal`, and the `runs`, `show` and `check` commands built on it,
     read without the lock and may see a torn final record from a write under
     way, which they leave out. On Windows they open the file so that
     compaction can still replace it.
-26. `Compact` writes a new journal beside the old one, flushes it, and moves it
+27. `Compact` writes a new journal beside the old one, flushes it, and moves it
     over the old one. A crash during compaction leaves one or the other whole.
     Each run becomes a snapshot record plus one record for the state each of
     its completed steps left, so no record is bigger than the ones it replaces.

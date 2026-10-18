@@ -200,15 +200,18 @@ fails at once and the run compensates.
   count, so a step that crashes the process every time gives up at
   `MaxAttempts` and the run compensates.
 - **`Close` is called during a step.** The step's context is canceled. If it
-  returns an error, the attempt is given back and the step runs again on the
-  next open as the same attempt. If it completes anyway, that is recorded.
+  returns the context's error, the attempt is given back and the step runs
+  again on the next open as the same attempt. If it completes anyway, or
+  fails for a reason of its own, that is recorded.
 - **It is killed during an undo.** That undo runs again. Undos already done
   don't.
 - **It is killed while a step waits to retry.** The wait goes on from the time
   in the journal.
 - **The last write was torn by a crash or power cut.** The torn record is cut
   off on open, kept in `JOURNAL.torn`, and the run carries on from the record
-  before it. A tear counts as one only if nothing whole follows it.
+  before it. That includes a group commit that reached the disk only in part.
+  A tear counts as one only if nothing whole follows it and it looks like an
+  unfinished write.
 - **The journal is damaged anywhere else.** `Open` refuses it with
   `ErrCorrupt`, and leaves the file as it is, rather than drop what comes
   after. `flowchassis check` says where.
@@ -279,7 +282,11 @@ crash the program and leave a journal that wouldn't open, a narrow crash
 window that let a step that had failed for good run again, a step that crashed
 the process every time looping forever, and the flipped-bit case above, among
 others. All are fixed, and each has a test that reproduces it
-([review_test.go](review_test.go)). The crash demo's checks were tightened at
+([review_test.go](review_test.go)). A second review then checked the fixes
+themselves and found more: two `Close` calls after a failed write could panic,
+a `Cancel` landing just before a run's end record could return success while
+the run completed, and `Wait` could hand back a run a moment before it
+finished. Those are fixed and tested too. The crash demo's checks were tightened at
 the same time: every ledger line must now match an attempt in the journal, and
 every repeated effect must come from an attempt a kill cut off. Planting the
 step-runs-again defect back into the engine on purpose made the demo report

@@ -109,26 +109,40 @@ func encode(r *Record) ([]byte, error) {
 // they cover, and whether what follows is a torn final write. Damage that
 // isn't at the very end is an error.
 //
-// A torn final write leaves less than a frame header, zeros, or the start of
-// a frame that runs to or past the end of the file; and nothing whole after
-// it. If any frame with a good checksum follows the bad one, the bad one
-// can't be the last write, so the journal is damaged and nothing is cut.
+// The last write before a crash can reach the disk in part: cut short, with
+// zeros where later pages should be, or (with group commit, which writes
+// several records at once) some records whole and the rest not. That write
+// was never acknowledged, so cutting it off loses nothing promised. A bad
+// record counts as such a tear when no record with a good checksum starts
+// anywhere after it. If one does, the bad one can't be part of the last
+// write, so the journal is damaged and nothing is cut. A last record that is
+// whole but fails its checksum is damage too, not a tear.
 func decodeAll(b []byte) (recs []Record, good int, torn bool, err error) {
 	off := 0
 	for off < len(b) {
 		bad := func() (bool, error) {
 			damaged := fmt.Errorf("%w: bad record at byte %d of %d", ErrCorrupt, off+len(header), len(b)+len(header))
-			if off+frameSize > len(b) || allZero(b[off:]) {
-				return true, nil
-			}
-			n := int(binary.LittleEndian.Uint32(b[off : off+4]))
-			if n == 0 || n > MaxRecord || off+frameSize+n < len(b) {
-				return false, damaged
-			}
 			if frameAfter(b, off+1) {
 				return false, damaged
 			}
-			return true, nil
+			if off+frameSize > len(b) {
+				return true, nil
+			}
+			n := int(binary.LittleEndian.Uint32(b[off : off+4]))
+			switch {
+			case n == 0:
+				return true, nil // the frame header never reached the disk
+			case n > MaxRecord:
+				return false, damaged
+			case off+frameSize+n > len(b):
+				return true, nil // cut short
+			case bytes.IndexByte(b[off+frameSize:off+frameSize+n], 0) >= 0:
+				return true, nil // holes: encoded JSON never holds a zero byte
+			}
+			// A whole record that fails its checksum, with nothing after it,
+			// was written and then damaged. It may have been acknowledged,
+			// so it isn't cut off quietly.
+			return false, damaged
 		}
 		if off+frameSize > len(b) {
 			t, e := bad()
@@ -158,11 +172,15 @@ func decodeAll(b []byte) (recs []Record, good int, torn bool, err error) {
 }
 
 // frameAfter reports whether a whole frame with a good checksum starts
-// anywhere at or after from.
+// anywhere at or after from. Only offsets whose payload starts the way every
+// record does are checksummed, which keeps the scan fast.
 func frameAfter(b []byte, from int) bool {
-	for p := from; p+frameSize < len(b); p++ {
+	for p := from; p+frameSize+len(recordStart) <= len(b); p++ {
+		if b[p+frameSize] != '{' || !bytes.HasPrefix(b[p+frameSize:], recordStart) {
+			continue
+		}
 		n := int(binary.LittleEndian.Uint32(b[p : p+4]))
-		if n == 0 || n > MaxRecord || p+frameSize+n > len(b) {
+		if n < len(recordStart) || n > MaxRecord || p+frameSize+n > len(b) {
 			continue
 		}
 		if crc32.Checksum(b[p+frameSize:p+frameSize+n], crcTab) == binary.LittleEndian.Uint32(b[p+4:p+8]) {
@@ -171,6 +189,9 @@ func frameAfter(b []byte, from int) bool {
 	}
 	return false
 }
+
+// recordStart is how every encoded record begins: the type field first.
+var recordStart = []byte(`{"t":"`)
 
 func allZero(b []byte) bool {
 	for _, c := range b {
@@ -273,7 +294,11 @@ func (s *FileStore) keepTorn(b []byte) error {
 		t.Close()
 		return err
 	}
-	return t.Close()
+	if err := t.Close(); err != nil {
+		return err
+	}
+	syncDir(filepath.Dir(s.path))
+	return nil
 }
 
 func checkHeader(data []byte) error {

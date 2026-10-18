@@ -470,3 +470,190 @@ func TestRetryPolicyFieldsDefaultOneByOne(t *testing.T) {
 		t.Fatal("a zero policy should be the default")
 	}
 }
+
+// Tests for what a second review found in the fixes above.
+
+// Two Close calls after a failed write used to both reach close(wstop) and
+// panic. Every caller now waits for the one shutdown.
+func TestConcurrentCloseAfterAFailedWrite(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		s := NewMemStore(nil)
+		var full atomic.Bool
+		s.FailAppend = func([]byte) error {
+			if full.Load() {
+				return errors.New("no space left on device")
+			}
+			return nil
+		}
+		e, _ := New(s, Options{})
+		e.Register(Flow{Name: "f", Steps: []Step{{Name: "a", Do: func(*Ctx) error { full.Store(true); return nil }}}})
+		e.Start("f", "r", nil)
+		for e.Err() == nil {
+			time.Sleep(50 * time.Microsecond)
+		}
+		var wg sync.WaitGroup
+		for j := 0; j < 3; j++ {
+			wg.Add(1)
+			go func() { defer wg.Done(); e.Close() }()
+		}
+		wg.Wait()
+	}
+}
+
+// A cancel landing between a run's last step and its end used to return
+// nil while the run ended completed with nothing undone. Now a run whose
+// Cancel returned nil always compensates.
+func TestCancelBeforeTheEndRecordCompensates(t *testing.T) {
+	e, _ := newMem(t, nil)
+	var undos int32
+	e.Register(Flow{Name: "f", Steps: []Step{{Name: "a",
+		Do:   func(*Ctx) error { return nil },
+		Undo: func(*Ctx) error { atomic.AddInt32(&undos, 1); return nil },
+	}}})
+	canceled, raced := 0, 0
+	for i := 0; i < 3000; i++ {
+		id := fmt.Sprintf("r%d", i)
+		e.Start("f", id, nil)
+		err := e.Cancel(id)
+		info := wait(t, e, id)
+		if err == nil {
+			canceled++
+			if info.Status != Compensated {
+				t.Fatalf("%s: Cancel returned nil and the run ended %s", id, info.Status)
+			}
+			if len(info.Done) == 1 {
+				raced++
+			}
+		} else if !errors.Is(err, ErrFinished) {
+			t.Fatal(err)
+		}
+	}
+	if int(undos) != raced {
+		t.Fatalf("%d runs completed their step before the cancel, %d undos", raced, undos)
+	}
+	t.Logf("%d of 3000 cancels took effect, %d after the step had completed", canceled, raced)
+}
+
+// Wait used to return the run as it was a moment before it finished.
+func TestWaitReturnsTheFinishedRun(t *testing.T) {
+	e, _ := New(NewMemStore(nil), Options{Workers: 8})
+	defer e.Close()
+	e.Register(Flow{Name: "f", Steps: []Step{{Name: "a", Do: func(*Ctx) error { return nil }}}})
+	var wg sync.WaitGroup
+	var bad atomic.Int32
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				id := fmt.Sprintf("g%d-%d", g, i)
+				e.Start("f", id, nil)
+				if info, err := e.Wait(context.Background(), id); err != nil || !info.Status.Finished() {
+					bad.Add(1)
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	if bad.Load() != 0 {
+		t.Fatalf("%d waits returned an unfinished run", bad.Load())
+	}
+}
+
+// A group-committed write that reached the disk only in part, with zeros
+// for the rest, is a tear: cut off and kept beside the journal.
+func TestPartlyWrittenBatchIsATear(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "j")
+	e, _ := Open(path, Options{})
+	e.Register(simple(&tape{}, "a"))
+	e.Start("f", "kept", nil)
+	wait(t, e, "kept")
+	e.Close()
+	before, _ := os.ReadFile(path)
+	batch := journalOf(t,
+		Record{Type: recStart, Run: "x", Flow: "f", Next: strp("a")},
+		Record{Type: recStart, Run: "y", Flow: "f", Next: strp("a")},
+	)
+	for i := 20; i < len(batch); i++ {
+		batch[i] = 0
+	}
+	os.WriteFile(path, append(append([]byte(nil), before...), batch...), 0o644)
+	e, err := Open(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(e.List()); n != 1 {
+		t.Fatalf("%d runs", n)
+	}
+	e.Close()
+	if kept, _ := os.ReadFile(path + ".torn"); !bytes.Equal(kept, batch) {
+		t.Fatalf(".torn holds %d bytes, want the %d of the batch", len(kept), len(batch))
+	}
+}
+
+// A last record that is whole but fails its checksum was damaged after it
+// was written, perhaps after it was acknowledged: refused, not cut off.
+func TestDamageToTheLastWholeRecordIsRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "j")
+	e, _ := Open(path, Options{})
+	e.Register(simple(&tape{}, "a"))
+	e.Start("f", "r", nil)
+	wait(t, e, "r")
+	e.Close()
+	data, _ := os.ReadFile(path)
+	data[len(data)-3] ^= 0x20 // a letter's case, inside the last record
+	os.WriteFile(path, data, 0o644)
+	if _, err := Open(path, Options{}); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("Open gave %v", err)
+	}
+	if after, _ := os.ReadFile(path); !bytes.Equal(after, data) {
+		t.Fatal("the journal was changed")
+	}
+}
+
+// A step that fails for good while Close is under way is recorded as
+// failed, not given back as if Close had cut it off.
+func TestARealFailureDuringCloseCounts(t *testing.T) {
+	s := NewMemStore(nil)
+	var calls int32
+	entered := make(chan struct{})
+	f := Flow{Name: "f", Steps: []Step{
+		{Name: "a", Do: func(*Ctx) error { return nil }, Undo: func(*Ctx) error { return nil }},
+		{Name: "b", Do: func(c *Ctx) error {
+			if atomic.AddInt32(&calls, 1) == 1 {
+				close(entered)
+				<-c.Done()
+			}
+			return Permanent(errors.New("declined"))
+		}},
+	}}
+	e, _ := New(s, Options{})
+	e.Register(f)
+	e.Start("f", "r", nil)
+	<-entered
+	e.Close()
+	e2, _ := New(NewMemStore(s.Bytes()), Options{})
+	defer e2.Close()
+	e2.Register(f)
+	if info := wait(t, e2, "r"); info.Status != Compensated || calls != 1 {
+		t.Fatalf("%s, b called %d times", info.Status, calls)
+	}
+}
+
+// Looking for whole records after a bad one stays fast on a large tail of
+// garbage.
+func TestTornScanIsFast(t *testing.T) {
+	junk := make([]byte, 16<<20)
+	x := uint32(1)
+	for i := range junk {
+		x ^= x << 13
+		x ^= x >> 17
+		x ^= x << 5
+		junk[i] = byte(x)
+	}
+	start := time.Now()
+	frameAfter(junk, 1)
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("scanning 16 MiB took %v", d)
+	}
+}
