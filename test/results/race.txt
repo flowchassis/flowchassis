@@ -1,13 +1,13 @@
 # Every test with the race detector
-# recorded 2026-10-18 09:45 UTC at 4948337, FlowChassis 0.1.0, go1.24.7 linux/amd64
+# recorded 2026-10-18 09:52 UTC at 9fb6640, FlowChassis 0.1.0, go1.24.7 linux/amd64
 # Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
 # command: go test -race -count=1 ./...
 
-ok  	github.com/flowchassis/flowchassis	49.596s
-ok  	github.com/flowchassis/flowchassis/cmd/flowchassis	4.202s
+ok  	github.com/flowchassis/flowchassis	46.909s
+ok  	github.com/flowchassis/flowchassis/cmd/flowchassis	4.207s
 ?   	github.com/flowchassis/flowchassis/examples/internal/fake	[no test files]
-ok  	github.com/flowchassis/flowchassis/examples/media	1.208s
-ok  	github.com/flowchassis/flowchassis/examples/provision	1.527s
-ok  	github.com/flowchassis/flowchassis/examples/signup	1.373s
-ok  	github.com/flowchassis/flowchassis/examples/webhook	2.782s
+ok  	github.com/flowchassis/flowchassis/examples/media	1.202s
+ok  	github.com/flowchassis/flowchassis/examples/provision	1.536s
+ok  	github.com/flowchassis/flowchassis/examples/signup	1.337s
+ok  	github.com/flowchassis/flowchassis/examples/webhook	2.759s
 ?   	github.com/flowchassis/flowchassis/internal/demo	[no test files]

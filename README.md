@@ -313,7 +313,7 @@ step-runs-again defect back into the engine on purpose made the demo report
 **The rest.** Every call and status has tests, as do retries and backoff,
 cancel during a step and during a retry wait, compensation that resumes after
 a restart, compaction in the middle of a compensation and with large states,
-many callers starting the same ID at once, and group commit. 72 test
+many callers starting the same ID at once, and group commit. 73 test
 functions, plus a test for each of the four [examples](#examples), run on
 Linux, macOS and Windows in CI, and under the race detector on Linux. The
 media example's test kills the program mid-transcode with SIGKILL and checks

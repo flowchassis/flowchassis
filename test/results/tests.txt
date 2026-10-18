@@ -1,5 +1,5 @@
 # Every test, verbose
-# recorded 2026-10-18 09:45 UTC at 4948337, FlowChassis 0.1.0, go1.24.7 linux/amd64
+# recorded 2026-10-18 09:52 UTC at 9fb6640, FlowChassis 0.1.0, go1.24.7 linux/amd64
 # Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
 # command: go test -count=1 -v ./...
 
@@ -71,25 +71,25 @@
 === RUN   TestCancelSurvivesRestart
 --- PASS: TestCancelSurvivesRestart (0.00s)
 === RUN   TestTornWriteAtEveryByte
---- PASS: TestTornWriteAtEveryByte (0.11s)
+--- PASS: TestTornWriteAtEveryByte (0.12s)
 === RUN   TestZeroFilledTail
 --- PASS: TestZeroFilledTail (0.00s)
 === RUN   TestCorruptionIsRefused
 --- PASS: TestCorruptionIsRefused (0.01s)
 === RUN   TestCompaction
---- PASS: TestCompaction (0.01s)
+--- PASS: TestCompaction (0.02s)
 === RUN   TestCompactionMidCompensation
 --- PASS: TestCompactionMidCompensation (0.01s)
 === RUN   TestWriteFailureStopsTheEngine
 --- PASS: TestWriteFailureStopsTheEngine (0.00s)
 === RUN   TestOversizedStateFailsTheStep
---- PASS: TestOversizedStateFailsTheStep (0.22s)
+--- PASS: TestOversizedStateFailsTheStep (0.15s)
 === RUN   TestJournalIsReadableWhileOpen
 --- PASS: TestJournalIsReadableWhileOpen (0.00s)
 === RUN   TestReplayRejectsNonsense
 --- PASS: TestReplayRejectsNonsense (0.00s)
 === RUN   TestCancelRacingCompact
---- PASS: TestCancelRacingCompact (0.03s)
+--- PASS: TestCancelRacingCompact (0.02s)
 === RUN   TestEarlyLengthDamageIsRefusedNotCut
 --- PASS: TestEarlyLengthDamageIsRefusedNotCut (0.01s)
 === RUN   TestTornTailIsKeptBeside
@@ -111,39 +111,41 @@
 === RUN   TestCloseRecordsAStepThatCompletes
 --- PASS: TestCloseRecordsAStepThatCompletes (0.00s)
 === RUN   TestCompactionWithLargeStates
---- PASS: TestCompactionWithLargeStates (0.78s)
+--- PASS: TestCompactionWithLargeStates (0.81s)
 === RUN   TestHeaderCutShortOpens
 --- PASS: TestHeaderCutShortOpens (0.01s)
 === RUN   TestRetryPolicyFieldsDefaultOneByOne
 --- PASS: TestRetryPolicyFieldsDefaultOneByOne (0.00s)
 === RUN   TestConcurrentCloseAfterAFailedWrite
---- PASS: TestConcurrentCloseAfterAFailedWrite (0.10s)
+--- PASS: TestConcurrentCloseAfterAFailedWrite (0.09s)
 === RUN   TestCancelBeforeTheEndRecordCompensates
-    review_test.go:534: 2970 of 3000 cancels took effect, 20 after the step had completed
---- PASS: TestCancelBeforeTheEndRecordCompensates (0.07s)
+    review_test.go:534: 2985 of 3000 cancels took effect, 4 after the step had completed
+--- PASS: TestCancelBeforeTheEndRecordCompensates (0.04s)
 === RUN   TestWaitReturnsTheFinishedRun
---- PASS: TestWaitReturnsTheFinishedRun (0.10s)
+--- PASS: TestWaitReturnsTheFinishedRun (0.11s)
 === RUN   TestPartlyWrittenBatchIsATear
---- PASS: TestPartlyWrittenBatchIsATear (0.01s)
+--- PASS: TestPartlyWrittenBatchIsATear (0.00s)
 === RUN   TestDamageToTheLastWholeRecordIsRefused
---- PASS: TestDamageToTheLastWholeRecordIsRefused (0.01s)
+--- PASS: TestDamageToTheLastWholeRecordIsRefused (0.00s)
 === RUN   TestARealFailureDuringCloseCounts
 --- PASS: TestARealFailureDuringCloseCounts (0.00s)
 === RUN   TestTornScanIsFast
---- PASS: TestTornScanIsFast (0.07s)
+--- PASS: TestTornScanIsFast (0.06s)
 === RUN   TestKilledWorkerOneAtATime
-    faults_test.go:85: PASS: 60 runs (44 completed, 16 compensated, 0 failed, 0 unfinished) through 40 kills and 41 processes; kills cut off 37 step and 1 undo attempts; 317 effects, 1 repeated after a kill; 7 checks passed, 0 problems
---- PASS: TestKilledWorkerOneAtATime (8.14s)
+    faults_test.go:87: PASS: 60 runs (44 completed, 16 compensated, 0 failed, 0 unfinished) through 40 kills and 41 processes; kills cut off 38 step and 2 undo attempts; 317 effects, 1 repeated after a kill; 7 checks passed, 0 problems
+--- PASS: TestKilledWorkerOneAtATime (8.26s)
 === RUN   TestKilledWorkerManyAtOnce
-    faults_test.go:94: PASS: 300 runs (225 completed, 75 compensated, 0 failed, 0 unfinished) through 60 kills and 61 processes; kills cut off 402 step and 40 undo attempts; 1586 effects, 11 repeated after a kill; 7 checks passed, 0 problems
---- PASS: TestKilledWorkerManyAtOnce (8.83s)
+    faults_test.go:96: PASS: 300 runs (225 completed, 75 compensated, 0 failed, 0 unfinished) through 60 kills and 61 processes; kills cut off 413 step and 41 undo attempts; 1593 effects, 18 repeated after a kill; 7 checks passed, 0 problems
+--- PASS: TestKilledWorkerManyAtOnce (8.82s)
 === RUN   TestKilledWorkerDuringCompensation
-    faults_test.go:106: PASS: 40 runs (30 completed, 10 compensated, 0 failed, 0 unfinished) through 40 kills and 41 processes; kills cut off 75 step and 5 undo attempts; 210 effects, 0 repeated after a kill; 7 checks passed, 0 problems
+    faults_test.go:108: PASS: 40 runs (30 completed, 10 compensated, 0 failed, 0 unfinished) through 40 kills and 41 processes; kills cut off 75 step and 5 undo attempts; 210 effects, 0 repeated after a kill; 7 checks passed, 0 problems
 --- PASS: TestKilledWorkerDuringCompensation (5.84s)
+=== RUN   TestVerifyAcceptsAnUndoCrashLoop
+--- PASS: TestVerifyAcceptsAnUndoCrashLoop (0.00s)
 === RUN   Example
 --- PASS: Example (0.00s)
 PASS
-ok  	github.com/flowchassis/flowchassis	25.271s
+ok  	github.com/flowchassis/flowchassis	25.261s
 === RUN   TestVersionAndUsage
 --- PASS: TestVersionAndUsage (0.00s)
 === RUN   TestRuns
@@ -155,24 +157,24 @@ ok  	github.com/flowchassis/flowchassis	25.271s
 === RUN   TestCompact
 --- PASS: TestCompact (0.01s)
 === RUN   TestDemo
---- PASS: TestDemo (2.08s)
+--- PASS: TestDemo (2.04s)
 PASS
-ok  	github.com/flowchassis/flowchassis/cmd/flowchassis	2.110s
+ok  	github.com/flowchassis/flowchassis/cmd/flowchassis	2.072s
 ?   	github.com/flowchassis/flowchassis/examples/internal/fake	[no test files]
 === RUN   TestMediaKilledWhileTranscoding
---- PASS: TestMediaKilledWhileTranscoding (0.16s)
+--- PASS: TestMediaKilledWhileTranscoding (0.17s)
 PASS
-ok  	github.com/flowchassis/flowchassis/examples/media	0.165s
+ok  	github.com/flowchassis/flowchassis/examples/media	0.173s
 === RUN   TestProvision
---- PASS: TestProvision (0.47s)
+--- PASS: TestProvision (0.48s)
 PASS
-ok  	github.com/flowchassis/flowchassis/examples/provision	0.475s
+ok  	github.com/flowchassis/flowchassis/examples/provision	0.479s
 === RUN   TestSignup
---- PASS: TestSignup (0.33s)
+--- PASS: TestSignup (0.31s)
 PASS
-ok  	github.com/flowchassis/flowchassis/examples/signup	0.328s
+ok  	github.com/flowchassis/flowchassis/examples/signup	0.316s
 === RUN   TestWebhook
 --- PASS: TestWebhook (1.73s)
 PASS
-ok  	github.com/flowchassis/flowchassis/examples/webhook	1.734s
+ok  	github.com/flowchassis/flowchassis/examples/webhook	1.733s
 ?   	github.com/flowchassis/flowchassis/internal/demo	[no test files]
