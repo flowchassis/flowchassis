@@ -1,8 +1,8 @@
 # The release smoke check on a static Linux binary built as the release workflow builds it
-# recorded 2026-10-18 05:43 UTC at no commit plus uncommitted changes, FlowChassis 0.1.0, go1.24.7 linux/amd64
+# recorded 2026-10-18 07:24 UTC at 36f8293, FlowChassis 0.1.0, go1.24.7 linux/amd64
 # Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
 # command: python3 scripts/smoke.py BIN
 
 flowchassis 0.1.0 (journal format 01, go1.24.7, linux/amd64)
-PASS: 40 runs (30 completed, 10 compensated, 0 failed, 0 unfinished) through 10 kills and 11 processes; kills cut off 33 step and 2 undo attempts; 204 effects, 4 repeated after a kill; 6 checks passed, 0 problems
+PASS: 40 runs (30 completed, 10 compensated, 0 failed, 0 unfinished) through 10 kills and 11 processes; kills cut off 34 step and 3 undo attempts; 211 effects, 1 repeated after a kill; 7 checks passed, 0 problems
 smoke check passed: flowchassis 0.1.0: version, crash demo (10 kills, 40 orders, 30 completed, 10 compensated), check, runs, show, compact, damaged journal refused

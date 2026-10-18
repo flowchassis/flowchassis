@@ -249,43 +249,62 @@ over. When a worker finally gets through the batch, every order is checked
 against the ledger. About one order in four has its shipping refused and must
 end compensated. About one in five has a card charge that fails twice first.
 
-At its defaults, 200 orders went through 40 kills, which cut off 134 step
+At its defaults, 200 orders went through 40 kills, which cut off 137 step
 attempts and 18 undo attempts in the middle. Every order ended the way its
 own rules said: 149 completed, 51 compensated, none lost, none left
-unfinished. 9 effects were repeated, each one from a step that a kill cut off
-after its effect and before its checkpoint, which is what at-least-once
-means and why `Key` exists. A larger run of 1,000 orders through 200 kills,
-16 in flight at once, came out the same: 750 completed, 250 compensated, 0
-problems.
+unfinished. 4 effects were repeated, and the checks trace each one to a step
+that a kill cut off after its effect and before its checkpoint, which is what
+at-least-once means and why `Key` exists. A larger run of 1,000 orders through
+200 kills, 16 in flight at once, came out the same: 750 completed, 250
+compensated, 48 of 5,298 effects repeated, each traced the same way, and 0
+problems across seven checks.
 
 **Torn writes.** A test cuts the journal at every byte of its last record.
-Every cut opens cleanly and resumes from the record before.
+Every cut opens cleanly, keeps the cut bytes in `JOURNAL.torn`, and resumes
+from the record before.
 
 **Damage.** Flipped bytes, bad checksums and impossible lengths before the end
-of the file are refused rather than skipped.
+of the file are refused, and the file is left as it was, rather than skipped.
+That includes one flipped bit in an early record's length, which a looser rule
+would mistake for a torn tail.
 
 **A full disk.** A store that starts failing mid-run stops the engine before
-the next step, and the run resumes correctly once the journal opens again.
+the next step. Nothing queued behind the failed write is written, and the run
+resumes correctly once the journal opens again.
+
+**An independent review.** Before the first release, a separate review read
+the code against [the contract](docs/CONTRACT.md) and tried to break it. It
+found real defects in that draft: a cancel racing with compaction that could
+crash the program and leave a journal that wouldn't open, a narrow crash
+window that let a step that had failed for good run again, a step that crashed
+the process every time looping forever, and the flipped-bit case above, among
+others. All are fixed, and each has a test that reproduces it
+([review_test.go](review_test.go)). The crash demo's checks were tightened at
+the same time: every ledger line must now match an attempt in the journal, and
+every repeated effect must come from an attempt a kill cut off. Planting the
+step-runs-again defect back into the engine on purpose made the demo report
+27 problems.
 
 **The rest.** Every call and status has tests, as do retries and backoff,
 cancel during a step and during a retry wait, compensation that resumes after
-a restart, compaction in the middle of a compensation, many callers starting
-the same ID at once, and group commit. 51 test functions, all of them also
-run under the race detector, on Linux and macOS in CI.
+a restart, compaction in the middle of a compensation and with large states,
+many callers starting the same ID at once, and group commit. 65 test
+functions run on Linux, macOS and Windows in CI, and under the race detector
+on Linux.
 
 **Speed.** Every checkpoint is flushed to disk before its step goes on, so
 speed depends on the disk. Records written at the same moment share one
-flush. On the 2-CPU cloud machine the results were recorded on, empty steps
-ran at about 1,800 a second with one worker, 5,600 with eight and 22,000 with
-64.
+flush, written by one writer goroutine. On the 2-CPU cloud machine the results
+were recorded on, empty steps ran at about 1,800 a second with one worker,
+6,300 with eight and 27,000 with 64.
 
 All of this is recorded by `sh scripts/record-tests.sh` into
 [test/results](test/results), and every number here comes from those files.
 
 ## Size
 
-The library is about 1,700 lines of Go with no dependencies outside the
-standard library. The `flowchassis` binary is 2.7 MB, static and stripped.
+The library is about 2,000 lines of Go with no dependencies outside the
+standard library. The `flowchassis` binary is 2.8 MB, static and stripped.
 
 ## What it doesn't do
 

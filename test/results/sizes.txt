@@ -1,13 +1,13 @@
 # Sizes
-# recorded 2026-10-18 05:43 UTC at no commit plus uncommitted changes, FlowChassis 0.1.0, go1.24.7 linux/amd64
+# recorded 2026-10-18 07:24 UTC at 36f8293, FlowChassis 0.1.0, go1.24.7 linux/amd64
 # Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
 # command: see scripts/record-tests.sh
 
-flowchassis binary (static, stripped, linux/amd64): 2744504 bytes
+flowchassis binary (static, stripped, linux/amd64): 2773176 bytes
 a hello-world program: 1429688 bytes
-the same program opening a FlowChassis journal: 2285752 bytes
-what the library adds: 856064 bytes
-library source, without tests: 1743 lines in 7 files
-tests: 1765 lines; test functions: 51
+the same program opening a FlowChassis journal: 2293944 bytes
+what the library adds: 864256 bytes
+library source, without tests: 1999 lines in 7 files
+tests: 2238 lines; test functions: 65
 modules required besides the standard library: 0
 github.com/flowchassis/flowchassis

@@ -1,5 +1,5 @@
 # Every test, verbose
-# recorded 2026-10-18 07:12 UTC at 897d792, FlowChassis 0.1.0, go1.24.7 linux/amd64
+# recorded 2026-10-18 07:23 UTC at 36f8293, FlowChassis 0.1.0, go1.24.7 linux/amd64
 # Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
 # command: go test -count=1 -v ./...
 
@@ -50,14 +50,14 @@
 === RUN   TestClosedEngine
 --- PASS: TestClosedEngine (0.00s)
 === RUN   TestManyRunsAtOnce
---- PASS: TestManyRunsAtOnce (0.02s)
+--- PASS: TestManyRunsAtOnce (0.01s)
 === RUN   TestRetryPolicyDelay
 --- PASS: TestRetryPolicyDelay (0.00s)
 === RUN   TestOpenCreatesAndLocksJournal
 --- PASS: TestOpenCreatesAndLocksJournal (0.00s)
 === RUN   TestGroupCommitSharesFlushes
-    engine_test.go:697: 1800 records in 133 appends
---- PASS: TestGroupCommitSharesFlushes (0.16s)
+    engine_test.go:697: 1800 records in 134 appends
+--- PASS: TestGroupCommitSharesFlushes (0.15s)
 === RUN   TestConcurrentStartsOfOneID
 --- PASS: TestConcurrentStartsOfOneID (0.00s)
 === RUN   TestResumeAfterClose
@@ -67,11 +67,11 @@
 === RUN   TestRetryDelaySurvivesRestart
 --- PASS: TestRetryDelaySurvivesRestart (0.30s)
 === RUN   TestCompensationResumesAfterRestart
---- PASS: TestCompensationResumesAfterRestart (0.00s)
+--- PASS: TestCompensationResumesAfterRestart (0.01s)
 === RUN   TestCancelSurvivesRestart
 --- PASS: TestCancelSurvivesRestart (0.00s)
 === RUN   TestTornWriteAtEveryByte
---- PASS: TestTornWriteAtEveryByte (0.08s)
+--- PASS: TestTornWriteAtEveryByte (0.09s)
 === RUN   TestZeroFilledTail
 --- PASS: TestZeroFilledTail (0.00s)
 === RUN   TestCorruptionIsRefused
@@ -91,9 +91,9 @@
 === RUN   TestCancelRacingCompact
 --- PASS: TestCancelRacingCompact (0.03s)
 === RUN   TestEarlyLengthDamageIsRefusedNotCut
---- PASS: TestEarlyLengthDamageIsRefusedNotCut (0.01s)
+--- PASS: TestEarlyLengthDamageIsRefusedNotCut (0.02s)
 === RUN   TestTornTailIsKeptBeside
---- PASS: TestTornTailIsKeptBeside (0.00s)
+--- PASS: TestTornTailIsKeptBeside (0.01s)
 === RUN   TestFinalFailureSurvivesACrash
 --- PASS: TestFinalFailureSurvivesACrash (0.00s)
 === RUN   TestFinalUndoFailureSurvivesACrash
@@ -111,24 +111,24 @@
 === RUN   TestCloseRecordsAStepThatCompletes
 --- PASS: TestCloseRecordsAStepThatCompletes (0.00s)
 === RUN   TestCompactionWithLargeStates
---- PASS: TestCompactionWithLargeStates (0.75s)
+--- PASS: TestCompactionWithLargeStates (1.04s)
 === RUN   TestHeaderCutShortOpens
 --- PASS: TestHeaderCutShortOpens (0.01s)
 === RUN   TestRetryPolicyFieldsDefaultOneByOne
 --- PASS: TestRetryPolicyFieldsDefaultOneByOne (0.00s)
 === RUN   TestKilledWorkerOneAtATime
     faults_test.go:78: PASS: 60 runs (44 completed, 16 compensated, 0 failed, 0 unfinished) through 40 kills and 41 processes; kills cut off 35 step and 3 undo attempts; 319 effects, 3 repeated after a kill; 7 checks passed, 0 problems
---- PASS: TestKilledWorkerOneAtATime (4.46s)
+--- PASS: TestKilledWorkerOneAtATime (4.53s)
 === RUN   TestKilledWorkerManyAtOnce
-    faults_test.go:87: PASS: 300 runs (225 completed, 75 compensated, 0 failed, 0 unfinished) through 60 kills and 61 processes; kills cut off 370 step and 46 undo attempts; 1604 effects, 29 repeated after a kill; 7 checks passed, 0 problems
---- PASS: TestKilledWorkerManyAtOnce (4.43s)
+    faults_test.go:87: PASS: 300 runs (225 completed, 75 compensated, 0 failed, 0 unfinished) through 60 kills and 61 processes; kills cut off 366 step and 37 undo attempts; 1585 effects, 10 repeated after a kill; 7 checks passed, 0 problems
+--- PASS: TestKilledWorkerManyAtOnce (4.41s)
 === RUN   TestKilledWorkerDuringCompensation
-    faults_test.go:99: PASS: 40 runs (30 completed, 10 compensated, 0 failed, 0 unfinished) through 40 kills and 41 processes; kills cut off 73 step and 7 undo attempts; 214 effects, 4 repeated after a kill; 7 checks passed, 0 problems
---- PASS: TestKilledWorkerDuringCompensation (3.15s)
+    faults_test.go:99: PASS: 40 runs (30 completed, 10 compensated, 0 failed, 0 unfinished) through 40 kills and 41 processes; kills cut off 68 step and 10 undo attempts; 213 effects, 3 repeated after a kill; 7 checks passed, 0 problems
+--- PASS: TestKilledWorkerDuringCompensation (3.19s)
 === RUN   Example
 --- PASS: Example (0.01s)
 PASS
-ok  	github.com/flowchassis/flowchassis	13.936s
+ok  	github.com/flowchassis/flowchassis	14.349s
 === RUN   TestVersionAndUsage
 --- PASS: TestVersionAndUsage (0.00s)
 === RUN   TestRuns
@@ -142,5 +142,5 @@ ok  	github.com/flowchassis/flowchassis	13.936s
 === RUN   TestDemo
 --- PASS: TestDemo (0.79s)
 PASS
-ok  	github.com/flowchassis/flowchassis/cmd/flowchassis	0.823s
+ok  	github.com/flowchassis/flowchassis/cmd/flowchassis	0.816s
 ?   	github.com/flowchassis/flowchassis/internal/demo	[no test files]
