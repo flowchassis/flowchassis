@@ -75,7 +75,13 @@ func TestRunsWaitForTheirFlow(t *testing.T) {
 	e, _ := Open(path, Options{})
 	e.Register(simple(tp, "a"))
 	block := make(chan struct{})
-	e.Register(Flow{Name: "slow", Steps: []Step{{Name: "a", Do: func(c *Ctx) error { <-block; return c.Err() }}}})
+	e.Register(Flow{Name: "slow", Steps: []Step{{Name: "a", Do: func(c *Ctx) error {
+		select {
+		case <-block:
+		case <-c.Done():
+		}
+		return c.Err()
+	}}}})
 	e.Start("slow", "s", nil)
 	e.Close()
 	close(block)

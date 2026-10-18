@@ -1,8 +1,68 @@
 # Every test with the race detector
-# recorded 2026-10-18 05:42 UTC at no commit plus uncommitted changes, FlowChassis 0.1.0, go1.24.7 linux/amd64
+# recorded 2026-10-18 07:12 UTC at 897d792, FlowChassis 0.1.0, go1.24.7 linux/amd64
 # Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
 # command: go test -race -count=1 ./...
 
-ok  	github.com/flowchassis/flowchassis	22.788s
-ok  	github.com/flowchassis/flowchassis/cmd/flowchassis	3.041s
+panic: test timed out after 10m0s
+	running tests:
+		TestRunsWaitForTheirFlow (10m0s)
+
+goroutine 375 [running]:
+testing.(*M).startAlarm.func1()
+	/usr/local/go1.24.7/src/testing/testing.go:2484 +0x605
+created by time.goFunc
+	/usr/local/go1.24.7/src/time/sleep.go:215 +0x45
+
+goroutine 1 [chan receive, 9 minutes]:
+testing.(*T).Run(0xc000106540, {0x7119bc, 0x18}, 0x71cc88)
+	/usr/local/go1.24.7/src/testing/testing.go:1859 +0x91e
+testing.runTests.func1(0xc000106540)
+	/usr/local/go1.24.7/src/testing/testing.go:2279 +0x86
+testing.tRunner(0xc000106540, 0xc00015da30)
+	/usr/local/go1.24.7/src/testing/testing.go:1792 +0x226
+testing.runTests(0xc000162000, {0x8d8e80, 0x3b, 0x3b}, {0x6fd500?, 0xc000123a00?, 0x8dd660?})
+	/usr/local/go1.24.7/src/testing/testing.go:2277 +0x96d
+testing.(*M).Run(0xc000118140)
+	/usr/local/go1.24.7/src/testing/testing.go:2142 +0xeeb
+github.com/flowchassis/flowchassis_test.TestMain(0xc000118140)
+	/home/claude/flowchassis/faults_test.go:30 +0x192
+main.main()
+	_testmain.go:173 +0x172
+
+goroutine 370 [select, 9 minutes]:
+github.com/flowchassis/flowchassis.(*Engine).writer(0xc0000b68c0)
+	/home/claude/flowchassis/engine.go:480 +0x18b
+created by github.com/flowchassis/flowchassis.New in goroutine 369
+	/home/claude/flowchassis/engine.go:131 +0xd4b
+
+goroutine 371 [chan receive, 9 minutes]:
+github.com/flowchassis/flowchassis.TestRunsWaitForTheirFlow.func1(0xc00028c3f0)
+	/home/claude/flowchassis/recovery_test.go:78 +0x32
+github.com/flowchassis/flowchassis.call(0xc0002e6440, 0xc00028c3f0)
+	/home/claude/flowchassis/engine.go:826 +0x89
+github.com/flowchassis/flowchassis.(*Engine).stepOne(0xc0000b68c0, 0xc0000b6a00, 0xc0000ba680)
+	/home/claude/flowchassis/engine.go:714 +0x13e5
+github.com/flowchassis/flowchassis.(*Engine).advance(0xc0000b68c0, 0xc0000b6a00)
+	/home/claude/flowchassis/engine.go:670 +0x373
+github.com/flowchassis/flowchassis.(*Engine).worker(0xc0000b68c0)
+	/home/claude/flowchassis/engine.go:644 +0x2f7
+created by github.com/flowchassis/flowchassis.New in goroutine 369
+	/home/claude/flowchassis/engine.go:134 +0xd58
+
+goroutine 369 [sync.WaitGroup.Wait, 9 minutes]:
+sync.runtime_SemacquireWaitGroup(0xc0000b69e8?)
+	/usr/local/go1.24.7/src/runtime/sema.go:110 +0x25
+sync.(*WaitGroup).Wait(0xc0000b69e8)
+	/usr/local/go1.24.7/src/sync/waitgroup.go:118 +0x89
+github.com/flowchassis/flowchassis.(*Engine).Close(0xc0000b68c0)
+	/home/claude/flowchassis/engine.go:403 +0x151
+github.com/flowchassis/flowchassis.TestRunsWaitForTheirFlow(0xc0000f28c0)
+	/home/claude/flowchassis/recovery_test.go:80 +0x7f8
+testing.tRunner(0xc0000f28c0, 0x71cc88)
+	/usr/local/go1.24.7/src/testing/testing.go:1792 +0x226
+created by testing.(*T).Run in goroutine 1
+	/usr/local/go1.24.7/src/testing/testing.go:1851 +0x8f3
+FAIL	github.com/flowchassis/flowchassis	600.078s
+ok  	github.com/flowchassis/flowchassis/cmd/flowchassis	3.003s
 ?   	github.com/flowchassis/flowchassis/internal/demo	[no test files]
+FAIL
