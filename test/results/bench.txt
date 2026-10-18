@@ -1,0 +1,20 @@
+# Throughput: runs of three empty steps, every checkpoint flushed to disk
+# recorded 2026-10-18 05:42 UTC at no commit plus uncommitted changes, FlowChassis 0.1.0, go1.24.7 linux/amd64
+# Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
+# command: go test -run ^$ -bench Runs -benchtime 5000x -count 3 .
+
+goos: linux
+goarch: amd64
+pkg: github.com/flowchassis/flowchassis
+cpu: Intel(R) Xeon(R) Processor @ 2.10GHz
+BenchmarkRunsOneWorker-2      	    5000	   1704372 ns/op	      1760 steps/s
+BenchmarkRunsOneWorker-2      	    5000	   1743124 ns/op	      1721 steps/s
+BenchmarkRunsOneWorker-2      	    5000	   1659584 ns/op	      1808 steps/s
+BenchmarkRunsEightWorkers-2   	    5000	    549485 ns/op	      5460 steps/s
+BenchmarkRunsEightWorkers-2   	    5000	    502840 ns/op	      5966 steps/s
+BenchmarkRunsEightWorkers-2   	    5000	    549486 ns/op	      5460 steps/s
+BenchmarkRunsSixtyFour-2      	    5000	    126836 ns/op	     23653 steps/s
+BenchmarkRunsSixtyFour-2      	    5000	    139312 ns/op	     21534 steps/s
+BenchmarkRunsSixtyFour-2      	    5000	    132963 ns/op	     22563 steps/s
+PASS
+ok  	github.com/flowchassis/flowchassis	35.676s

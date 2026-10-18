@@ -1,0 +1,199 @@
+name: release
+
+# Builds the FlowChassis binaries, checks each one on the kind of machine it
+# is for, and publishes them with a release.
+#
+# Releases go out on their own. When the test workflow passes on a push to
+# main and the Version in flowchassis.go has no tag yet, this workflow builds
+# the binaries from that commit, runs scripts/smoke.py on them, then tags the
+# commit vX.Y.Z and publishes the release "FlowChassis vX.Y.Z" with the
+# archives and SHA256SUMS attached. Nothing goes public unless every build and
+# check passes. scripts/release-plan.py has the rules, and RELEASING.md the
+# whole procedure.
+#
+# It also attaches binaries to a release someone publishes by hand, and it
+# can be run by hand to rebuild the binaries of an existing tag.
+
+on:
+  workflow_run:
+    workflows: [test]
+    types: [completed]
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build again, such as v0.1.0"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.x"
+
+jobs:
+  plan:
+    # After the tests, only for a push to main in this repository that passed.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+      ref: ${{ steps.plan.outputs.ref }}
+      new: ${{ steps.plan.outputs.new }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          RUN_WORKFLOW: ${{ github.event.workflow_run.name }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: python3 scripts/release-plan.py
+
+  # Every binary is pure Go (no cgo), built here for each system, then
+  # checked on its own kind of machine below.
+  build:
+    needs: plan
+    if: needs.plan.outputs.tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Build and package
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -e
+          for target in linux/amd64 linux/arm64 darwin/arm64 darwin/amd64 windows/amd64; do
+            os=${target%/*}; arch=${target#*/}
+            exe=flowchassis; [ "$os" = windows ] && exe=flowchassis.exe
+            dir=pkg/${os}_${arch}
+            mkdir -p "$dir"
+            GOOS=$os GOARCH=$arch go build -trimpath -ldflags '-s -w' -o "$dir/$exe" ./cmd/flowchassis
+            file "$dir/$exe"
+            cp LICENSE NOTICE THIRD_PARTY_LICENSES.md README.md "$dir/"
+            if [ "$os" = windows ]; then
+              (cd "$dir" && zip -q "../../flowchassis_${os}_${arch}.zip" *)
+            else
+              tar -czf "flowchassis_${os}_${arch}.tar.gz" -C "$dir" .
+            fi
+          done
+          file pkg/linux_amd64/flowchassis | grep -q 'statically linked'
+          file pkg/linux_arm64/flowchassis | grep -q 'ARM aarch64'
+          file pkg/darwin_amd64/flowchassis | grep -q 'x86_64'
+          file pkg/darwin_arm64/flowchassis | grep -q 'arm64'
+          ls -l flowchassis_*
+      - uses: actions/upload-artifact@v7
+        with:
+          name: archives
+          path: flowchassis_*
+
+  # The smoke check runs the crash demo, which kills real worker processes,
+  # on each machine the binaries are for. The Intel macOS build can only be
+  # checked for its architecture, above.
+  check:
+    needs: [plan, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            archive: flowchassis_linux_amd64.tar.gz
+          - runner: ubuntu-24.04-arm
+            archive: flowchassis_linux_arm64.tar.gz
+          - runner: macos-latest
+            archive: flowchassis_darwin_arm64.tar.gz
+          - runner: windows-latest
+            archive: flowchassis_windows_amd64.zip
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: archives
+      - name: Unpack and run the smoke check
+        shell: bash
+        run: |
+          py=python3; if [ "$RUNNER_OS" = Windows ]; then py=python; fi
+          mkdir bin
+          case "${{ matrix.archive }}" in
+            *.zip) "$py" -m zipfile -e "${{ matrix.archive }}" bin ;;
+            *) tar -xzf "${{ matrix.archive }}" -C bin ;;
+          esac
+          "$py" scripts/smoke.py bin
+
+  release:
+    needs: [plan, build, check]
+    # Two runs for the same tag take turns; the second finds it published.
+    concurrency:
+      group: release-${{ needs.plan.outputs.tag }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.plan.outputs.tag }}
+      REF: ${{ needs.plan.outputs.ref }}
+      NEW: ${{ needs.plan.outputs.new }}
+      GH_TOKEN: ${{ github.token }}
+      FILES: >-
+        flowchassis_linux_amd64.tar.gz flowchassis_linux_arm64.tar.gz
+        flowchassis_darwin_arm64.tar.gz flowchassis_darwin_amd64.tar.gz
+        flowchassis_windows_amd64.zip SHA256SUMS
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: archives
+          path: dist
+      - name: Checksums and notes
+        run: |
+          cd dist
+          sha256sum flowchassis_* > SHA256SUMS
+          cat SHA256SUMS
+          cat > ../notes.md <<'EOF'
+          Ready-built `flowchassis` command for inspecting journals and running the crash demo, with the license files and README in each archive.
+
+          | System | File |
+          |---|---|
+          | Linux, x86-64 (static) | flowchassis_linux_amd64.tar.gz |
+          | Linux, ARM64 (static) | flowchassis_linux_arm64.tar.gz |
+          | macOS, Apple silicon | flowchassis_darwin_arm64.tar.gz |
+          | macOS, Intel | flowchassis_darwin_amd64.tar.gz |
+          | Windows, x86-64 | flowchassis_windows_amd64.zip |
+
+          SHA256SUMS lists the checksums. The macOS binaries aren't signed by Apple, so macOS may ask you to allow them the first time, or you can run `xattr -d com.apple.quarantine flowchassis`. To use FlowChassis in a Go program: `go get github.com/flowchassis/flowchassis@latest`.
+          EOF
+      - name: Tag the commit and publish the release, binaries attached
+        if: env.NEW == 'true'
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "$TAG is out already."
+            exit 0
+          fi
+          cd dist
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$REF" \
+            --title "FlowChassis $TAG" --notes-file ../notes.md $FILES
+      - name: Attach the binaries to an existing release
+        if: env.NEW != 'true'
+        run: |
+          cd dist
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber $FILES
+          body=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body)
+          if [ -z "$body" ]; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file ../notes.md
+          fi

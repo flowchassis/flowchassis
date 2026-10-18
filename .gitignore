@@ -1,0 +1,8 @@
+/flowchassis
+/flowchassis.exe
+*.journal
+*.journal.lock
+*.journal.compact
+coverage.out
+
+/scripts/__pycache__/

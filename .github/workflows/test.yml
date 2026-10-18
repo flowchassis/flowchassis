@@ -1,0 +1,48 @@
+name: test
+
+# Every push to main and every pull request: formatting, vet, the full test
+# suite (worker processes killed mid-flow and recovered, torn and damaged
+# journals, compaction, group commit) on Linux, macOS and Windows, the race
+# detector on Linux, the release plan's cases, and the smoke check on a
+# binary built as the release builds it. A passing run on main starts the
+# release workflow, which releases a raised version.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+      - if: runner.os != 'Windows'
+        run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test -count=1 ./...
+      - if: runner.os == 'Linux'
+        run: go test -race -count=1 ./...
+      - if: runner.os != 'Windows'
+        run: python3 -B -m unittest discover -s scripts -p '*_test.py'
+      - name: Smoke check on a release-style binary
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          mkdir bin
+          exe=flowchassis
+          if [ "$RUNNER_OS" = Windows ]; then exe=flowchassis.exe; fi
+          go build -trimpath -ldflags '-s -w' -o "bin/$exe" ./cmd/flowchassis
+          py=python3; if [ "$RUNNER_OS" = Windows ]; then py=python; fi
+          "$py" scripts/smoke.py bin

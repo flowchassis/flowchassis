@@ -1,0 +1,11 @@
+FlowChassis
+Copyright FlowChassis.com 2026
+
+This product includes software developed at FlowChassis.com (https://flowchassis.com).
+It is licensed under the Apache License, Version 2.0; see LICENSE.
+
+The FlowChassis package uses only the Go standard library. The flowchassis
+command and its ready-built binaries also contain:
+  The Go runtime and standard library, Copyright 2009 The Go Authors,
+  BSD-style license
+Its notice is in THIRD_PARTY_LICENSES.md.

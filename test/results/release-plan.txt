@@ -1,0 +1,21 @@
+# The release plan's cases
+# recorded 2026-10-18 05:42 UTC at no commit plus uncommitted changes, FlowChassis 0.1.0, go1.24.7 linux/amd64
+# Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
+# command: python3 -B -m unittest discover -s scripts -p *_test.py -v
+
+test_bad_version_fails (release_plan_test.ReleasePlan.test_bad_version_fails) ... ok
+test_existing_tag_releases_nothing (release_plan_test.ReleasePlan.test_existing_tag_releases_nothing) ... ok
+test_first_release_with_no_tags (release_plan_test.ReleasePlan.test_first_release_with_no_tags) ... ok
+test_moved_main_defers_without_reading_tags (release_plan_test.ReleasePlan.test_moved_main_defers_without_reading_tags) ... ok
+test_new_version_releases_the_tested_commit (release_plan_test.ReleasePlan.test_new_version_releases_the_tested_commit) ... ok
+test_numeric_not_text_order (release_plan_test.ReleasePlan.test_numeric_not_text_order) ... ok
+test_older_version_fails (release_plan_test.ReleasePlan.test_older_version_fails) ... ok
+test_other_workflow_releases_nothing (release_plan_test.ReleasePlan.test_other_workflow_releases_nothing) ... ok
+test_release_by_hand_attaches (release_plan_test.ReleasePlan.test_release_by_hand_attaches) ... ok
+test_run_by_hand_needs_a_valid_tag (release_plan_test.ReleasePlan.test_run_by_hand_needs_a_valid_tag) ... ok
+test_source_has_one_valid_version (release_plan_test.ReleasePlan.test_source_has_one_valid_version) ... ok
+
+----------------------------------------------------------------------
+Ran 11 tests in 0.001s
+
+OK
