@@ -1,5 +1,5 @@
 # Sizes
-# recorded 2026-10-18 08:06 UTC at 1312f62, FlowChassis 0.1.0, go1.24.7 linux/amd64
+# recorded 2026-10-18 09:46 UTC at 4948337, FlowChassis 0.1.0, go1.24.7 linux/amd64
 # Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
 # command: see scripts/record-tests.sh
 
@@ -8,6 +8,7 @@ a hello-world program: 1429688 bytes
 the same program opening a FlowChassis journal: 2293944 bytes
 what the library adds: 864256 bytes
 library source, without tests: 2055 lines in 7 files
-tests: 2425 lines; test functions: 72
+tests: 2432 lines; test functions: 72
+example programs: 4, 1375 lines with their tests and fakes; test functions: 4
 modules required besides the standard library: 0
 github.com/flowchassis/flowchassis

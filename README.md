@@ -314,8 +314,10 @@ step-runs-again defect back into the engine on purpose made the demo report
 cancel during a step and during a retry wait, compensation that resumes after
 a restart, compaction in the middle of a compensation and with large states,
 many callers starting the same ID at once, and group commit. 72 test
-functions run on Linux, macOS and Windows in CI, and under the race detector
-on Linux.
+functions, plus a test for each of the four [examples](#examples), run on
+Linux, macOS and Windows in CI, and under the race detector on Linux. The
+media example's test kills the program mid-transcode with SIGKILL and checks
+that it carries on.
 
 **Speed.** Every checkpoint is flushed to disk before its step goes on, so
 speed depends on the disk. Records written at the same moment share one
