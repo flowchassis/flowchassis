@@ -1,5 +1,5 @@
 # Throughput: runs of three empty steps, every checkpoint flushed to disk
-# recorded 2026-10-18 07:23 UTC at 36f8293, FlowChassis 0.1.0, go1.24.7 linux/amd64
+# recorded 2026-10-18 08:05 UTC at 1312f62, FlowChassis 0.1.0, go1.24.7 linux/amd64
 # Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
 # command: go test -run ^$ -bench Runs -benchtime 5000x -count 3 .
 
@@ -7,14 +7,14 @@ goos: linux
 goarch: amd64
 pkg: github.com/flowchassis/flowchassis
 cpu: Intel(R) Xeon(R) Processor @ 2.10GHz
-BenchmarkRunsOneWorker-2      	    5000	   1636516 ns/op	      1833 steps/s
-BenchmarkRunsOneWorker-2      	    5000	   1632550 ns/op	      1838 steps/s
-BenchmarkRunsOneWorker-2      	    5000	   1597150 ns/op	      1878 steps/s
-BenchmarkRunsEightWorkers-2   	    5000	    464107 ns/op	      6464 steps/s
-BenchmarkRunsEightWorkers-2   	    5000	    486360 ns/op	      6168 steps/s
-BenchmarkRunsEightWorkers-2   	    5000	    479606 ns/op	      6255 steps/s
-BenchmarkRunsSixtyFour-2      	    5000	    100126 ns/op	     29962 steps/s
-BenchmarkRunsSixtyFour-2      	    5000	    114286 ns/op	     26250 steps/s
-BenchmarkRunsSixtyFour-2      	    5000	    115624 ns/op	     25946 steps/s
+BenchmarkRunsOneWorker-2      	    5000	   1681403 ns/op	      1784 steps/s
+BenchmarkRunsOneWorker-2      	    5000	   1593486 ns/op	      1883 steps/s
+BenchmarkRunsOneWorker-2      	    5000	   1605243 ns/op	      1869 steps/s
+BenchmarkRunsEightWorkers-2   	    5000	    414515 ns/op	      7237 steps/s
+BenchmarkRunsEightWorkers-2   	    5000	    440936 ns/op	      6804 steps/s
+BenchmarkRunsEightWorkers-2   	    5000	    454669 ns/op	      6598 steps/s
+BenchmarkRunsSixtyFour-2      	    5000	    115420 ns/op	     25992 steps/s
+BenchmarkRunsSixtyFour-2      	    5000	    122945 ns/op	     24401 steps/s
+BenchmarkRunsSixtyFour-2      	    5000	    111063 ns/op	     27012 steps/s
 PASS
-ok  	github.com/flowchassis/flowchassis	33.257s
+ok  	github.com/flowchassis/flowchassis	32.865s

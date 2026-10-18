@@ -1,5 +1,5 @@
 # The release plan's cases
-# recorded 2026-10-18 07:23 UTC at 36f8293, FlowChassis 0.1.0, go1.24.7 linux/amd64
+# recorded 2026-10-18 08:05 UTC at 1312f62, FlowChassis 0.1.0, go1.24.7 linux/amd64
 # Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor @ 2.10GHz, 2 CPUs
 # command: python3 -B -m unittest discover -s scripts -p *_test.py -v
 
@@ -16,6 +16,6 @@ test_run_by_hand_needs_a_valid_tag (release_plan_test.ReleasePlan.test_run_by_ha
 test_source_has_one_valid_version (release_plan_test.ReleasePlan.test_source_has_one_valid_version) ... ok
 
 ----------------------------------------------------------------------
-Ran 11 tests in 0.001s
+Ran 11 tests in 0.002s
 
 OK
