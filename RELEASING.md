@@ -77,11 +77,16 @@ check:
 1. The `test` run and then the `release` run finished green
    (`gh run list --repo flowchassis/flowchassis`).
 2. The release exists with all six files
-   (`gh release view vX.Y.Z --repo flowchassis/flowchassis`).
-3. The `latest/download` links resolve, and a downloaded archive's SHA256
-   matches SHA256SUMS.
-4. A downloaded Linux binary runs: `flowchassis version` names the release.
-5. `go list -m github.com/flowchassis/flowchassis@vX.Y.Z` finds the module.
+   (`gh api repos/flowchassis/flowchassis/releases/tags/vX.Y.Z`).
+3. The `verify release` run that follows finished green. It does what a user
+   does: on Linux x86-64 and ARM64, macOS Apple silicon and Windows it
+   downloads the archive and SHA256SUMS from the public release page with no
+   token, checks the checksum and the archive's contents, compares the
+   `latest/download` link with the tagged file, runs `flowchassis version`
+   (it must name the release) and runs the smoke check. The Intel macOS
+   archive gets the checksum and contents checks only. Run it by hand for any
+   tag with `gh workflow run "verify release" -f tag=vX.Y.Z`.
+4. `go list -m github.com/flowchassis/flowchassis@vX.Y.Z` finds the module.
 
 ## By hand
 

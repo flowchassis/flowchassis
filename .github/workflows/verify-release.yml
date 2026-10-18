@@ -1,0 +1,134 @@
+name: verify release
+
+# Checks a published release the way a user gets it. Each machine downloads
+# its archive and SHA256SUMS from the public release page, with no token,
+# checks the checksum, unpacks the archive, runs `flowchassis version` and
+# expects the release's version, then runs the smoke check. It also checks
+# that the releases/latest/download links the site uses lead to the same
+# files.
+#
+# It runs after every run of the release workflow, on the latest release, and
+# when this file changes. It can also be run by hand for any tag.
+
+on:
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+  push:
+    branches: [main]
+    paths: [.github/workflows/verify-release.yml]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to check, such as v0.1.0 (empty means the latest)"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  find:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag="$INPUT_TAG"
+          if [ -z "$tag" ]; then
+            tag=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)
+          fi
+          if [ -z "$tag" ]; then
+            echo "No release published yet; nothing to check."
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Checking ${tag:-nothing}"
+
+  verify:
+    needs: find
+    if: needs.find.outputs.tag != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            archive: flowchassis_linux_amd64.tar.gz
+            run: true
+          - runner: ubuntu-24.04-arm
+            archive: flowchassis_linux_arm64.tar.gz
+            run: true
+          - runner: macos-latest
+            archive: flowchassis_darwin_arm64.tar.gz
+            run: true
+          - runner: windows-latest
+            archive: flowchassis_windows_amd64.zip
+            run: true
+          # No Intel Mac runner: the checksum and the archive's contents are
+          # checked, the binary isn't run.
+          - runner: ubuntu-latest
+            archive: flowchassis_darwin_amd64.tar.gz
+            run: false
+    runs-on: ${{ matrix.runner }}
+    env:
+      TAG: ${{ needs.find.outputs.tag }}
+      ARCHIVE: ${{ matrix.archive }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.find.outputs.tag }}
+      - name: Download from the public release page and check
+        shell: bash
+        run: |
+          set -euo pipefail
+          py=python3; if [ "$RUNNER_OS" = Windows ]; then py=python; fi
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
+          latest="https://github.com/$GITHUB_REPOSITORY/releases/latest/download"
+          mkdir dl
+          curl -fsSL --retry 3 -o "dl/$ARCHIVE" "$base/$ARCHIVE"
+          curl -fsSL --retry 3 -o dl/SHA256SUMS "$base/SHA256SUMS"
+          "$py" - "$ARCHIVE" <<'EOF'
+          import hashlib, sys
+          name = sys.argv[1]
+          sums = dict(reversed(l.split()) for l in open("dl/SHA256SUMS") if l.strip())
+          got = hashlib.sha256(open("dl/" + name, "rb").read()).hexdigest()
+          want = sums.get(name)
+          print(f"{name}: {got}")
+          if got != want:
+              sys.exit(f"checksum mismatch: SHA256SUMS says {want}")
+          print("checksum matches SHA256SUMS")
+          EOF
+          # The site links to releases/latest/download; when this is the
+          # latest release they must give the same file.
+          now=$(curl -fsSI -o /dev/null -w '%{redirect_url}' "$latest/SHA256SUMS" || true)
+          case "$now" in
+            *"/download/$TAG/"*|*"$TAG"*) curl -fsSL --retry 3 -o dl/latest "$latest/$ARCHIVE"
+               cmp "dl/$ARCHIVE" dl/latest && echo "latest/download link gives the same file" ;;
+            *) echo "$TAG isn't the latest release; latest links not compared" ;;
+          esac
+          mkdir bin
+          case "$ARCHIVE" in
+            *.zip) "$py" -m zipfile -e "dl/$ARCHIVE" bin ;;
+            *) tar -xzf "dl/$ARCHIVE" -C bin ;;
+          esac
+          ls -l bin
+          for f in LICENSE NOTICE THIRD_PARTY_LICENSES.md README.md; do
+            test -f "bin/$f" || { echo "missing $f in the archive"; exit 1; }
+          done
+      - name: Run the binary
+        if: matrix.run
+        shell: bash
+        run: |
+          set -euo pipefail
+          py=python3; if [ "$RUNNER_OS" = Windows ]; then py=python; fi
+          exe=bin/flowchassis; [ "$RUNNER_OS" = Windows ] && exe=bin/flowchassis.exe
+          out=$("$exe" version)
+          echo "$out"
+          case "$out" in
+            *"${TAG#v}"*) echo "version matches $TAG" ;;
+            *) echo "expected version ${TAG#v}"; exit 1 ;;
+          esac
+          "$py" scripts/smoke.py bin
