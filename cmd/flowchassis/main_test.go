@@ -192,7 +192,7 @@ func TestCompact(t *testing.T) {
 
 func TestDemo(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "demo")
-	code, out, errOut := cli("demo", "-runs", "20", "-kills", "5", "-workers", "2", "-pause", "10ms", "-dir", dir)
+	code, out, errOut := cli("demo", "-runs", "20", "-kills", "5", "-workers", "2", "-pause", "30ms", "-dir", dir)
 	if code != 0 {
 		t.Fatalf("%d\n%s\n%s", code, out, errOut)
 	}

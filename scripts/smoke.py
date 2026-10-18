@@ -59,9 +59,9 @@ def main():
     work = tempfile.mkdtemp(prefix="flowchassis-smoke-")
     try:
         demo = os.path.join(work, "demo")
-        r = run("demo", "-runs", "40", "-kills", "10", "-workers", "4", "-pause", "10ms", "-dir", demo)
+        r = run("demo", "-runs", "40", "-kills", "10", "-workers", "4", "-pause", "40ms", "-dir", demo)
         rep = json.loads(r.stdout)
-        if not rep.get("ok") or rep["runs"] != 40 or rep["kills"] != 10 or rep["unfinished"] or rep["failed"]:
+        if not rep.get("ok") or rep["runs"] != 40 or rep["kills"] != 10 or rep["unfinished"] or rep["failed"]:  # gave-up runs are checked by the demo itself
             fail(f"demo report: {r.stdout}")
         print(r.stderr.strip().splitlines()[-1], flush=True)
 
