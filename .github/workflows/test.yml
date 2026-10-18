@@ -30,7 +30,19 @@ jobs:
       - if: runner.os != 'Windows'
         run: test -z "$(gofmt -l .)"
       - run: go vet ./...
-      - run: go test -count=1 ./...
+      - name: go test
+        shell: bash
+        run: |
+          set +e
+          go test -count=1 ./... > test.log 2>&1
+          status=$?
+          cat test.log
+          if [ $status -ne 0 ]; then
+            # Failures as annotations, readable without downloading the log.
+            msg=$(grep -E -- '--- FAIL|_test\.go:[0-9]+:|panic:|^FAIL' test.log | head -40 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=go test failed::${msg}"
+          fi
+          exit $status
       - if: runner.os == 'Linux'
         run: go test -race -count=1 ./...
       - if: runner.os != 'Windows'
