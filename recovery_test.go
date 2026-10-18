@@ -17,8 +17,8 @@ import (
 )
 
 // TestResumeAfterClose closes an engine with a step under way and opens the
-// journal again: the run resumes at that step, which runs again with its
-// attempt count carried over, and the earlier steps don't run again.
+// journal again: the run resumes at that step, which runs again as the same
+// attempt (Close doesn't use one up), and the earlier steps don't run again.
 func TestResumeAfterClose(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "j")
 	tp := &tape{}
@@ -45,7 +45,7 @@ func TestResumeAfterClose(t *testing.T) {
 	e.Close()
 
 	info := mustRead(t, path)["r"]
-	if info.Status != Running || info.Step != "b" || info.Attempt != 1 {
+	if info.Status != Running || info.Step != "b" || info.Attempt != 0 {
 		t.Fatalf("journal after close: %+v", info)
 	}
 
@@ -62,7 +62,7 @@ func TestResumeAfterClose(t *testing.T) {
 	if info.Status != Completed {
 		t.Fatal(info.Status)
 	}
-	if got, want := tp.get(), []string{"do a", "do b attempt 2", "do c"}; !reflect.DeepEqual(got, want) {
+	if got, want := tp.get(), []string{"do a", "do b attempt 1", "do c"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
 }
@@ -158,7 +158,7 @@ func TestCompensationResumesAfterRestart(t *testing.T) {
 	defer e2.Close()
 	e2.Register(f)
 	info := wait(t, e2, "r")
-	want := []string{"do a", "do b", "do c", "undo c", "undo b", "undo a attempt 2"}
+	want := []string{"do a", "do b", "do c", "undo c", "undo b", "undo a attempt 1"}
 	if got := tp.get(); !reflect.DeepEqual(got, want) || info.Status != Compensated {
 		t.Fatalf("got %v want %v (%s)", got, want, info.Status)
 	}
@@ -304,15 +304,10 @@ func TestCorruptionIsRefused(t *testing.T) {
 		}
 		os.Remove(p + ".lock")
 	}
-	for name, b := range map[string][]byte{
-		"not a journal": []byte("hello world, this is some text"),
-		"short header":  header[:4],
-	} {
-		p := filepath.Join(dir, "other")
-		os.WriteFile(p, b, 0o644)
-		if _, err := Open(p, Options{}); !errors.Is(err, ErrCorrupt) {
-			t.Errorf("%s: %v", name, err)
-		}
+	other := filepath.Join(dir, "other")
+	os.WriteFile(other, []byte("hello world, this is some text"), 0o644)
+	if _, err := Open(other, Options{}); !errors.Is(err, ErrCorrupt) {
+		t.Errorf("not a journal: %v", err)
 	}
 	p := filepath.Join(dir, "future")
 	os.WriteFile(p, []byte("FLOWCJ99"), 0o644)

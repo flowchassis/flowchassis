@@ -40,14 +40,17 @@ const (
 	recStart    = "start"    // a run began: flow, input
 	recBegin    = "begin"    // an attempt of a step is about to run
 	recDone     = "done"     // a step completed: its state and the next step
-	recFail     = "fail"     // an attempt failed: retry_at, or final
+	recFail     = "fail"     // an attempt failed: retry_at, or final (which starts compensation)
 	recCancel   = "cancel"   // cancellation was asked for
 	recComp     = "comp"     // compensation began: why
 	recUBegin   = "ubegin"   // an attempt of an undo is about to run
 	recUDone    = "udone"    // an undo completed
-	recUFail    = "ufail"    // an undo attempt failed: retry_at, or final
+	recUFail    = "ufail"    // an undo attempt failed: retry_at, or final (which ends the run failed)
+	recYield    = "yield"    // Close cut off a step attempt: it doesn't count
+	recUYield   = "uyield"   // Close cut off an undo attempt: it doesn't count
 	recEnd      = "end"      // the run finished: status
-	recSnapshot = "snapshot" // compaction: a whole run in one record
+	recSnapshot = "snapshot" // compaction: a run, without the state of its steps
+	recSState   = "sstate"   // compaction: the state one completed step left
 )
 
 // Record is one entry of the journal, as stored. Inspect returns them so
@@ -105,22 +108,27 @@ func encode(r *Record) ([]byte, error) {
 // decodeAll reads frames from b. It returns the records, how many bytes of b
 // they cover, and whether what follows is a torn final write. Damage that
 // isn't at the very end is an error.
+//
+// A torn final write leaves less than a frame header, zeros, or the start of
+// a frame that runs to or past the end of the file; and nothing whole after
+// it. If any frame with a good checksum follows the bad one, the bad one
+// can't be the last write, so the journal is damaged and nothing is cut.
 func decodeAll(b []byte) (recs []Record, good int, torn bool, err error) {
 	off := 0
 	for off < len(b) {
 		bad := func() (bool, error) {
-			// A torn final write leaves less than a frame header, zeros, or
-			// a frame with a plausible length that runs to or past the end
-			// of the file. Anything else is damage, and nothing after it is
-			// thrown away.
+			damaged := fmt.Errorf("%w: bad record at byte %d of %d", ErrCorrupt, off+len(header), len(b)+len(header))
 			if off+frameSize > len(b) || allZero(b[off:]) {
 				return true, nil
 			}
 			n := int(binary.LittleEndian.Uint32(b[off : off+4]))
-			if n > 0 && n <= MaxRecord && off+frameSize+n >= len(b) {
-				return true, nil
+			if n == 0 || n > MaxRecord || off+frameSize+n < len(b) {
+				return false, damaged
 			}
-			return false, fmt.Errorf("%w: bad record at byte %d of %d", ErrCorrupt, off+len(header), len(b)+len(header))
+			if frameAfter(b, off+1) {
+				return false, damaged
+			}
+			return true, nil
 		}
 		if off+frameSize > len(b) {
 			t, e := bad()
@@ -149,6 +157,21 @@ func decodeAll(b []byte) (recs []Record, good int, torn bool, err error) {
 	return recs, off, false, nil
 }
 
+// frameAfter reports whether a whole frame with a good checksum starts
+// anywhere at or after from.
+func frameAfter(b []byte, from int) bool {
+	for p := from; p+frameSize < len(b); p++ {
+		n := int(binary.LittleEndian.Uint32(b[p : p+4]))
+		if n == 0 || n > MaxRecord || p+frameSize+n > len(b) {
+			continue
+		}
+		if crc32.Checksum(b[p+frameSize:p+frameSize+n], crcTab) == binary.LittleEndian.Uint32(b[p+4:p+8]) {
+			return true
+		}
+	}
+	return false
+}
+
 func allZero(b []byte) bool {
 	for _, c := range b {
 		if c != 0 {
@@ -170,7 +193,8 @@ type FileStore struct {
 func NewFileStore(path string) *FileStore { return &FileStore{path: path} }
 
 // Load reads the journal, cuts off a torn final write if there is one, and
-// opens the file for appends.
+// opens the file for appends. Cut-off bytes are kept, appended to
+// JOURNAL.torn, rather than thrown away.
 func (s *FileStore) Load() ([]byte, error) {
 	_ = os.Remove(s.path + ".compact")
 	f, err := os.OpenFile(s.path, os.O_RDWR|os.O_CREATE, 0o644)
@@ -182,8 +206,19 @@ func (s *FileStore) Load() ([]byte, error) {
 		f.Close()
 		return nil, err
 	}
-	if len(data) == 0 {
-		if _, err := f.Write(header); err != nil {
+	// A new journal, or one whose header a crash cut short or left as zeros.
+	if len(data) == 0 || allZero(data) || (len(data) < len(header) && bytes.HasPrefix(header, data)) {
+		if len(data) > 0 {
+			if err := s.keepTorn(data); err != nil {
+				f.Close()
+				return nil, err
+			}
+		}
+		if err := f.Truncate(0); err != nil {
+			f.Close()
+			return nil, err
+		}
+		if _, err := f.WriteAt(header, 0); err != nil {
 			f.Close()
 			return nil, err
 		}
@@ -206,6 +241,10 @@ func (s *FileStore) Load() ([]byte, error) {
 		return nil, err
 	}
 	if torn {
+		if err := s.keepTorn(body[good:]); err != nil {
+			f.Close()
+			return nil, err
+		}
 		if err := f.Truncate(int64(len(header) + good)); err != nil {
 			f.Close()
 			return nil, err
@@ -217,6 +256,24 @@ func (s *FileStore) Load() ([]byte, error) {
 	}
 	s.f, s.size = f, int64(len(header)+good)
 	return body[:good], nil
+}
+
+// keepTorn appends bytes cut off the journal to JOURNAL.torn and flushes
+// them, before the journal itself is cut.
+func (s *FileStore) keepTorn(b []byte) error {
+	t, err := os.OpenFile(s.path+".torn", os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := t.Write(b); err != nil {
+		t.Close()
+		return err
+	}
+	if err := t.Sync(); err != nil {
+		t.Close()
+		return err
+	}
+	return t.Close()
 }
 
 func checkHeader(data []byte) error {
@@ -378,14 +435,22 @@ func (m *MemStore) Bytes() []byte {
 // ReadJournal reads a journal file without opening it for writing or taking
 // its lock, so it works while an engine has the file open. A torn final
 // write, which a running engine can leave for a moment, is left out and
-// reported in torn.
+// reported in torn; so is a header cut short by a crash.
 func ReadJournal(path string) (recs []Record, torn bool, err error) {
-	data, err := os.ReadFile(path)
+	f, err := openShared(path)
+	if err != nil {
+		return nil, false, err
+	}
+	data, err := io.ReadAll(f)
+	f.Close()
 	if err != nil {
 		return nil, false, err
 	}
 	if len(data) == 0 {
 		return nil, false, nil
+	}
+	if allZero(data) || (len(data) < len(header) && bytes.HasPrefix(header, data)) {
+		return nil, true, nil
 	}
 	if err := checkHeader(data); err != nil {
 		return nil, false, err

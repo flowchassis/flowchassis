@@ -41,6 +41,7 @@ const usage = `flowchassis inspects FlowChassis journals and runs the crash demo
   flowchassis runs JOURNAL [-status S] [-json]      list the runs in a journal
   flowchassis show JOURNAL RUN [-json]              one run: state and history
   flowchassis check JOURNAL                         verify a journal record by record
+                                                    (exit 0 good, 1 damaged, 3 torn final write)
   flowchassis compact JOURNAL [-drop-finished-before DURATION]
                                                     rewrite a journal with one record per run
   flowchassis demo [-runs N] [-kills N] [-workers N] [-pause D] [-seed N] [-dir DIR]
@@ -250,9 +251,15 @@ func describe(r flowchassis.Record) string {
 		return fmt.Sprintf("%s: done, next %s", r.Step, next)
 	case "fail":
 		if r.Final {
-			return fmt.Sprintf("%s: attempt %d failed for good: %s", r.Step, r.Attempt, r.Error)
+			return fmt.Sprintf("%s: attempt %d failed for good, compensating: %s", r.Step, r.Attempt, r.Error)
 		}
 		return fmt.Sprintf("%s: attempt %d failed, retry at %s: %s", r.Step, r.Attempt, r.RetryAt.Local().Format("15:04:05.000"), r.Error)
+	case "yield":
+		return fmt.Sprintf("%s: attempt %d cut off by shutdown, not counted", r.Step, r.Attempt)
+	case "uyield":
+		return fmt.Sprintf("undo %s: attempt %d cut off by shutdown, not counted", r.Step, r.Attempt)
+	case "sstate":
+		return "state of a completed step, written by compaction"
 	case "cancel":
 		return "cancel asked for"
 	case "comp":
@@ -263,7 +270,7 @@ func describe(r flowchassis.Record) string {
 		return fmt.Sprintf("undo %s: done", r.Step)
 	case "ufail":
 		if r.Final {
-			return fmt.Sprintf("undo %s: attempt %d failed for good: %s", r.Step, r.Attempt, r.Error)
+			return fmt.Sprintf("undo %s: attempt %d failed for good, run failed: %s", r.Step, r.Attempt, r.Error)
 		}
 		return fmt.Sprintf("undo %s: attempt %d failed, retry at %s: %s", r.Step, r.Attempt, r.RetryAt.Local().Format("15:04:05.000"), r.Error)
 	case "end":
@@ -297,15 +304,18 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 	for _, r := range runs {
 		count[r.Status]++
 	}
-	fmt.Fprintf(stdout, "%s: %d bytes, %d records, %d runs, every checksum good\n", path, st.Size(), len(recs), len(runs))
+	fmt.Fprintf(stdout, "%s: %d bytes, %d records, %d runs\n", path, st.Size(), len(recs), len(runs))
 	for _, s := range []flowchassis.Status{flowchassis.Pending, flowchassis.Running, flowchassis.Retrying, flowchassis.Compensating, flowchassis.Completed, flowchassis.Compensated, flowchassis.Failed} {
 		if count[s] > 0 {
 			fmt.Fprintf(stdout, "  %-13s %d\n", s, count[s])
 		}
 	}
 	if torn {
-		fmt.Fprintln(stdout, "  the last record is a torn write; the engine drops it on the next Open (a program writing as this ran can cause this too)")
+		fmt.Fprintln(stdout, "WARNING: the journal ends in a torn write. Every whole record before it has a good checksum. Opening the journal")
+		fmt.Fprintln(stdout, "cuts the torn bytes off and keeps them in JOURNAL.torn. A program writing to the journal as this ran can cause it too.")
+		return 3
 	}
+	fmt.Fprintln(stdout, "OK: every record has a good checksum")
 	return 0
 }
 

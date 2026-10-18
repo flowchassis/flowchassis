@@ -1,7 +1,7 @@
 // Copyright FlowChassis.com 2026
 // SPDX-License-Identifier: Apache-2.0
 
-//go:build unix
+//go:build unix && !solaris && !aix
 
 package flowchassis
 
@@ -43,3 +43,6 @@ func syncDir(dir string) {
 		d.Close()
 	}
 }
+
+// openShared opens a file for reading.
+func openShared(path string) (*os.File, error) { return os.Open(path) }

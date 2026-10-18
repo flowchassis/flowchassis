@@ -110,26 +110,41 @@ type Step struct {
 
 // RetryPolicy sets attempts and the wait between them. The wait before
 // attempt n+1 is Backoff * Multiplier^(n-1), capped at MaxBackoff.
+//
+// A field left at zero takes its value from Options.Retry, and from
+// DefaultRetry after that, except MaxBackoff: zero there means no cap.
 type RetryPolicy struct {
-	// MaxAttempts is the number of attempts, the first included. Zero takes
-	// the default; 1 means no retries.
+	// MaxAttempts is the number of attempts, the first included. Every
+	// attempt that began counts, including one cut off by a crash; one cut
+	// off by Close doesn't. 1 means no retries.
 	MaxAttempts int
 	// Backoff is the wait after the first failed attempt.
 	Backoff time.Duration
 	// MaxBackoff caps the wait. Zero means no cap.
 	MaxBackoff time.Duration
-	// Multiplier grows the wait after each failed attempt. Zero means 2.
+	// Multiplier grows the wait after each failed attempt.
 	Multiplier float64
 }
 
-// DefaultRetry is used where neither the step nor Options set a policy.
+// DefaultRetry is used where neither the step nor Options set a policy, and
+// fills the fields they leave at zero.
 var DefaultRetry = RetryPolicy{MaxAttempts: 3, Backoff: 100 * time.Millisecond, MaxBackoff: 30 * time.Second, Multiplier: 2}
 
 func (p RetryPolicy) isZero() bool { return p == RetryPolicy{} }
 
+// or fills p's zero fields from q. A policy left entirely at zero is q.
 func (p RetryPolicy) or(q RetryPolicy) RetryPolicy {
 	if p.isZero() {
 		return q
+	}
+	if p.MaxAttempts <= 0 {
+		p.MaxAttempts = q.MaxAttempts
+	}
+	if p.Backoff <= 0 {
+		p.Backoff = q.Backoff
+	}
+	if p.Multiplier <= 0 {
+		p.Multiplier = q.Multiplier
 	}
 	return p
 }

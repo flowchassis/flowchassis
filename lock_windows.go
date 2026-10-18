@@ -53,3 +53,19 @@ func (l *fileLock) unlock() {
 // syncDir does nothing on Windows, where directories can't be flushed this
 // way and a rename is made durable by the file system.
 func syncDir(string) {}
+
+// openShared opens a file for reading and lets others delete or rename it
+// meanwhile, so tools reading the journal don't block compaction.
+func openShared(path string) (*os.File, error) {
+	p, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, err
+	}
+	h, err := syscall.CreateFile(p, syscall.GENERIC_READ,
+		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE,
+		nil, syscall.OPEN_EXISTING, syscall.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	return os.NewFile(uintptr(h), path), nil
+}

@@ -117,7 +117,7 @@ func TestShow(t *testing.T) {
 		t.Fatal(code)
 	}
 	for _, want := range []string{"status   compensated", "done     reserve", "undone   reserve", `input    {"order":"bad"}`, "sku = A-42",
-		"charge: attempt 1 failed for good: card declined", "undo reserve: done", "ended compensated"} {
+		"charge: attempt 1 failed for good, compensating: card declined", "undo reserve: done", "ended compensated"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("show lacks %q:\n%s", want, out)
 		}
@@ -142,13 +142,13 @@ func TestShow(t *testing.T) {
 func TestCheck(t *testing.T) {
 	path := journal(t)
 	code, out, _ := cli("check", path)
-	if code != 0 || !strings.Contains(out, "every checksum good") || !strings.Contains(out, "retrying      1") {
+	if code != 0 || !strings.Contains(out, "OK: every record has a good checksum") || !strings.Contains(out, "retrying      1") {
 		t.Fatalf("%d %s", code, out)
 	}
 	data, _ := os.ReadFile(path)
 	torn := filepath.Join(t.TempDir(), "torn")
 	os.WriteFile(torn, data[:len(data)-3], 0o644)
-	if code, out, _ := cli("check", torn); code != 0 || !strings.Contains(out, "torn write") {
+	if code, out, _ := cli("check", torn); code != 3 || !strings.Contains(out, "WARNING: the journal ends in a torn write") {
 		t.Fatalf("%d %s", code, out)
 	}
 	bad := filepath.Join(t.TempDir(), "bad")
@@ -200,7 +200,7 @@ func TestDemo(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &r); err != nil {
 		t.Fatal(err)
 	}
-	if !r.OK || r.Runs != 20 || r.Kills != 5 || r.Completed+r.Compensated != 20 || len(r.Checks) != 6 {
+	if !r.OK || r.Runs != 20 || r.Kills != 5 || r.Completed+r.Compensated != 20 || len(r.Checks) != 7 {
 		t.Fatalf("%+v", r)
 	}
 	if !strings.Contains(errOut, "PASS: 20 runs") {

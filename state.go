@@ -47,7 +47,16 @@ type run struct {
 	active   bool
 	timer    *time.Timer
 	cancelFn context.CancelFunc
-	finished chan struct{}
+	finished chan struct{} // closed once the run has finished
+	fclosed  bool
+}
+
+// markFinished closes the finished channel once the run has finished.
+func (r *run) markFinished() {
+	if r.Status.Finished() && !r.fclosed {
+		close(r.finished)
+		r.fclosed = true
+	}
 }
 
 func newRun(id string) *run {
@@ -80,7 +89,7 @@ func apply(runs map[string]*run, rec *Record) (*run, error) {
 		old := r
 		r = newRun(rec.Run)
 		if old != nil {
-			r.finished = old.finished
+			r.finished, r.fclosed = old.finished, old.fclosed
 		}
 		r.snapshot = *rec.Snap
 		if r.State == nil {
@@ -116,19 +125,23 @@ func apply(runs map[string]*run, rec *Record) (*run, error) {
 	case recFail:
 		r.Attempt = rec.Attempt
 		r.Error = rec.Error
-		if !rec.Final && rec.RetryAt != nil {
+		if rec.Final {
+			// Failing for good and starting compensation are one record, so
+			// no crash can fall between them.
+			r.compensate(fmt.Sprintf("step %s: %s", rec.Step, rec.Error))
+		} else if rec.RetryAt != nil {
 			r.RetryAt = *rec.RetryAt
 			r.Status = Retrying
 		}
+	case recYield:
+		// Close cut the attempt off: it doesn't count.
+		r.Attempt = rec.Attempt - 1
+	case recUYield:
+		r.UAttempt = rec.Attempt - 1
 	case recCancel:
 		r.Cancel = true
 	case recComp:
-		r.Compensating = true
-		r.Status = Compensating
-		r.Error = rec.Error
-		r.UndoNext = len(r.Done) - 1
-		r.UAttempt = 0
-		r.RetryAt = time.Time{}
+		r.compensate(rec.Error)
 	case recUBegin:
 		r.Status = Compensating
 		if i := r.indexOf(rec.Seq); i >= 0 {
@@ -148,11 +161,23 @@ func apply(runs map[string]*run, rec *Record) (*run, error) {
 		r.RetryAt = time.Time{}
 	case recUFail:
 		r.UAttempt = rec.Attempt
-		if !rec.Final && rec.RetryAt != nil {
+		if rec.Final {
+			// An undo failing for good ends the run, in the same record.
+			r.Status = Failed
+			r.Ended = rec.At
+			r.Error = fmt.Sprintf("undo %s: %s", rec.Step, rec.Error)
+			r.RetryAt = time.Time{}
+		} else if rec.RetryAt != nil {
 			r.RetryAt = *rec.RetryAt
 		}
-		if rec.Final {
-			r.Error = rec.Error
+	case recSState:
+		i := r.indexOf(rec.Seq)
+		if i < 0 {
+			return nil, fmt.Errorf("%w: state for step %d of run %q, which it never completed", ErrCorrupt, rec.Seq, rec.Run)
+		}
+		r.Done[i].State = rec.State
+		if i == len(r.Done)-1 {
+			r.State = rec.State
 		}
 	case recEnd:
 		r.Status = rec.Status
@@ -165,6 +190,16 @@ func apply(runs map[string]*run, rec *Record) (*run, error) {
 		return nil, fmt.Errorf("%w: unknown record type %q", ErrCorrupt, rec.Type)
 	}
 	return r, nil
+}
+
+// compensate starts compensation.
+func (r *run) compensate(cause string) {
+	r.Compensating = true
+	r.Status = Compensating
+	r.Error = cause
+	r.UndoNext = len(r.Done) - 1
+	r.UAttempt = 0
+	r.RetryAt = time.Time{}
 }
 
 func (r *run) indexOf(seq int) int {
@@ -200,8 +235,16 @@ func (r *run) info() RunInfo {
 	return i
 }
 
+// snap is the run for compaction: everything but the state each completed
+// step left, which goes in records of its own so that no record grows past
+// what the run's own records needed.
 func (r *run) snap() *snapshot {
 	s := r.snapshot
+	s.State = nil
+	s.Done = make([]completion, len(r.Done))
+	for i, c := range r.Done {
+		s.Done[i] = completion{Step: c.Step, Seq: c.Seq}
+	}
 	return &s
 }
 

@@ -25,11 +25,20 @@ format it doesn't know.
 Records are read from the start. A record whose checksum fails, whose length
 is zero or too big, or that is cut short, ends the read:
 
-- If it is the last thing in the file (the frame runs to or past the end), or
-  everything from there on is zeros, it is a torn write from a crash and is
-  cut off.
+- It is a torn write from a crash, and is cut off, only if nothing whole
+  follows it: fewer than 8 bytes are left, or everything from there on is
+  zeros, or the frame has a plausible length that runs to or past the end of
+  the file and no checksum-valid frame starts anywhere after it. The bytes cut
+  off are appended to `JOURNAL.torn` and flushed before the journal is cut.
 - Otherwise the file is damaged, and reading fails with `ErrCorrupt`. Nothing
-  after the damage is used.
+  after the damage is used, and the file isn't changed.
+
+A file shorter than the header that is the start of it, or a file of zeros,
+is a new journal whose header a crash cut short: it opens as empty, with the
+stray bytes kept in `JOURNAL.torn`.
+
+`flowchassis check` exits 0 for a good journal, 1 for a damaged one, and 3
+for one that ends in a torn write.
 
 ## Records
 
@@ -41,14 +50,17 @@ Every record has `t` (type), `run` (run ID) and `at` (UTC time). Byte fields
 | `start` | `Start` | `flow`, `input`, `next`: the first step |
 | `begin` | an attempt of a step is about to run | `step`, `seq`, `attempt` |
 | `done` | the step completed | `step`, `seq`, `state`: the whole state after it, `next`: the step after it, or `""` for the end |
-| `fail` | an attempt failed | `step`, `attempt`, `err`, and `retry_at` or `final: true` |
+| `fail` | an attempt failed | `step`, `attempt`, `err`, and `retry_at`; or `final: true`, which also starts compensation |
+| `yield` | `Close` cut an attempt off; it doesn't count | `step`, `seq`, `attempt` |
 | `cancel` | `Cancel` | |
-| `comp` | compensation begins | `err`: why |
+| `comp` | compensation begins after a cancel | `err`: why |
 | `ubegin` | an attempt of an undo is about to run | `step`, `seq` (of the completion being undone), `attempt` |
 | `udone` | the undo completed | `step`, `seq` |
-| `ufail` | an undo attempt failed | `step`, `seq`, `attempt`, `err`, and `retry_at` or `final: true` |
+| `ufail` | an undo attempt failed | `step`, `seq`, `attempt`, `err`, and `retry_at`; or `final: true`, which also ends the run `failed` |
+| `uyield` | `Close` cut an undo attempt off; it doesn't count | `step`, `seq`, `attempt` |
 | `end` | the run finished | `status`: `completed`, `compensated` or `failed`, and `err` |
-| `snapshot` | `Compact` | `snap`: the whole run in one record |
+| `snapshot` | `Compact` | `snap`: the run, without the state of its completed steps |
+| `sstate` | `Compact`, after a snapshot | `seq`, `state`: the state one completed step left |
 
 A run's status, current step, attempts, state and history all follow from its
 records in order. `Replay` does that, and the engine uses the same code both
@@ -67,8 +79,8 @@ run      order-0002
 flow     order
 status   compensated
 error    step ship: carrier refused the address
-started  2026-10-18T08:45:21+03:00
-ended    2026-10-18T08:45:22+03:00
+started  2026-10-18T09:50:07+03:00
+ended    2026-10-18T09:50:07+03:00
 done     reserve, charge, receipt
 undone   charge, reserve
 input    {"order":2}
@@ -77,23 +89,22 @@ state
   receipt = order-0002/receipt/3
   reserve = order-0002/reserve/1
 history
-  08:45:21.989  started order
-  08:45:21.990  reserve: attempt 1 began
-  08:45:22.012  reserve: done, next charge
-  08:45:22.014  charge: attempt 1 began
-  08:45:22.035  charge: attempt 1 failed, retry at 08:45:22.037: card network timed out
-  08:45:22.194  charge: attempt 2 began
-  08:45:22.215  charge: attempt 2 failed, retry at 08:45:22.219: card network timed out
-  08:45:22.219  charge: attempt 3 began
-  08:45:22.240  charge: done, next receipt
-  08:45:22.241  receipt: attempt 1 began
-  08:45:22.262  receipt: done, next ship
-  08:45:22.263  ship: attempt 1 began
-  08:45:22.284  ship: attempt 1 failed for good: carrier refused the address
-  08:45:22.284  compensating: step ship: carrier refused the address
-  08:45:22.285  undo charge: attempt 1 began
-  08:45:22.306  undo charge: done
-  08:45:22.306  undo reserve: attempt 1 began
-  08:45:22.328  undo reserve: done
-  08:45:22.328  ended compensated (step ship: carrier refused the address)
+  09:50:07.393  started order
+  09:50:07.393  reserve: attempt 1 began
+  09:50:07.416  reserve: done, next charge
+  09:50:07.416  charge: attempt 1 began
+  09:50:07.437  charge: attempt 1 failed, retry at 09:50:07.439: card network timed out
+  09:50:07.595  charge: attempt 2 began
+  09:50:07.617  charge: attempt 2 failed, retry at 09:50:07.621: card network timed out
+  09:50:07.621  charge: attempt 3 began
+  09:50:07.642  charge: done, next receipt
+  09:50:07.643  receipt: attempt 1 began
+  09:50:07.664  receipt: done, next ship
+  09:50:07.665  ship: attempt 1 began
+  09:50:07.686  ship: attempt 1 failed for good, compensating: carrier refused the address
+  09:50:07.687  undo charge: attempt 1 began
+  09:50:07.709  undo charge: done
+  09:50:07.710  undo reserve: attempt 1 began
+  09:50:07.732  undo reserve: done
+  09:50:07.732  ended compensated (step ship: carrier refused the address)
 ```

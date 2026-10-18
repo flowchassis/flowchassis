@@ -18,7 +18,8 @@ import (
 type Options struct {
 	// Workers is how many runs execute at once. Zero means 4.
 	Workers int
-	// Retry is the policy for steps that don't set their own. Zero means
+	// Retry is the policy for steps that don't set their own, and fills the
+	// fields a step's policy leaves at zero. Its own zero fields come from
 	// DefaultRetry.
 	Retry RetryPolicy
 	// Now returns the current time. Tests set it; nil means time.Now.
@@ -38,16 +39,18 @@ type Engine struct {
 	store Store
 	lock  *fileLock
 
-	// Journal writes. Records queue up and one writer at a time appends
-	// every queued record and flushes them together (group commit), then
-	// applies them in the order they were written. jmu is held shared for
-	// each commit and exclusively by Compact and Close, so they see no write
-	// under way.
-	jmu      sync.RWMutex
-	qmu      sync.Mutex
-	queue    []*pending
-	flushing bool
-	smu      sync.Mutex // one Cancel at a time
+	// Journal writes. Committers queue records; one writer goroutine takes
+	// everything queued, checks it against the runs, appends it with one
+	// write and one flush (group commit), applies it in order, and answers
+	// each committer. jmu is held shared by every commit and exclusively by
+	// Compact and Close, so they see no write under way.
+	jmu    sync.RWMutex
+	qmu    sync.Mutex
+	queue  []*pending
+	kick   chan struct{}
+	wstop  chan struct{}
+	wdone  chan struct{}
+	cancMu sync.Mutex // one Cancel at a time
 
 	mu       sync.Mutex
 	cond     *sync.Cond
@@ -57,7 +60,7 @@ type Engine struct {
 	order    []string
 	ready    []*run
 	closing  bool // no new work: Close was called or a write failed
-	closed   bool // Close was called
+	closed   bool // Close has stopped the workers; no more writes
 	stopErr  error
 
 	ctx    context.Context
@@ -87,9 +90,7 @@ func New(store Store, opts Options) (*Engine, error) {
 	if opts.Workers <= 0 {
 		opts.Workers = 4
 	}
-	if opts.Retry.isZero() {
-		opts.Retry = DefaultRetry
-	}
+	opts.Retry = opts.Retry.or(DefaultRetry)
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
@@ -106,7 +107,11 @@ func New(store Store, opts Options) (*Engine, error) {
 		store.Close()
 		return nil, err
 	}
-	e := &Engine{opts: opts, store: store, flows: map[string]*flowDef{}, runs: map[string]*run{}, starting: map[string]chan struct{}{}}
+	e := &Engine{
+		opts: opts, store: store,
+		flows: map[string]*flowDef{}, runs: map[string]*run{}, starting: map[string]chan struct{}{},
+		kick: make(chan struct{}, 1), wstop: make(chan struct{}), wdone: make(chan struct{}),
+	}
 	e.cond = sync.NewCond(&e.mu)
 	for i := range recs {
 		_, existed := e.runs[recs[i].Run]
@@ -120,11 +125,10 @@ func New(store Store, opts Options) (*Engine, error) {
 		}
 	}
 	for _, r := range e.runs {
-		if r.Status.Finished() {
-			close(r.finished)
-		}
+		r.markFinished()
 	}
 	e.ctx, e.cancel = context.WithCancel(context.Background())
+	go e.writer()
 	for i := 0; i < opts.Workers; i++ {
 		e.wg.Add(1)
 		go e.worker()
@@ -141,7 +145,8 @@ func (e *Engine) Register(f Flow) error {
 		return fmt.Errorf("flowchassis: flow %q has no steps", f.Name)
 	}
 	d := &flowDef{Flow: f, byName: map[string]*Step{}, nextOf: map[string]string{}}
-	for i := range f.Steps {
+	d.Steps = append([]Step(nil), f.Steps...)
+	for i := range d.Steps {
 		s := &d.Steps[i]
 		if s.Name == "" {
 			return fmt.Errorf("flowchassis: step %d of flow %q has no name", i+1, f.Name)
@@ -153,8 +158,8 @@ func (e *Engine) Register(f Flow) error {
 			return fmt.Errorf("flowchassis: flow %q has two steps named %q", f.Name, s.Name)
 		}
 		d.byName[s.Name] = s
-		if i+1 < len(f.Steps) {
-			d.nextOf[s.Name] = f.Steps[i+1].Name
+		if i+1 < len(d.Steps) {
+			d.nextOf[s.Name] = d.Steps[i+1].Name
 		} else {
 			d.nextOf[s.Name] = ""
 		}
@@ -180,7 +185,8 @@ func (e *Engine) Register(f Flow) error {
 // random one. Start is idempotent: starting an id that exists, with the same
 // flow and input, returns that run's id without starting another, so it is
 // safe to call again after a crash. The same id with another flow or input
-// is ErrConflict.
+// is ErrConflict. A run that Compact dropped is forgotten, and its id can be
+// started again.
 func (e *Engine) Start(flow, id string, input []byte) (string, error) {
 	if id == "" {
 		var b [12]byte
@@ -253,7 +259,8 @@ func (e *Engine) List() []RunInfo {
 	return out
 }
 
-// Wait blocks until the run finishes or ctx is done, and returns the run.
+// Wait blocks until the run finishes or ctx is done, and returns the run. A
+// run that has finished is returned even after Close.
 func (e *Engine) Wait(ctx context.Context, id string) (RunInfo, error) {
 	e.mu.Lock()
 	r := e.runs[id]
@@ -262,25 +269,38 @@ func (e *Engine) Wait(ctx context.Context, id string) (RunInfo, error) {
 		return RunInfo{}, fmt.Errorf("%w: %q", ErrNotFound, id)
 	}
 	ch := r.finished
+	info := r.info()
 	e.mu.Unlock()
 	select {
 	case <-ch:
-		return e.Get(id)
-	case <-ctx.Done():
-		info, _ := e.Get(id)
-		return info, ctx.Err()
-	case <-e.ctx.Done():
-		info, _ := e.Get(id)
-		return info, e.closedErr()
+		return info, nil
+	default:
 	}
+	select {
+	case <-ch:
+	case <-ctx.Done():
+	case <-e.ctx.Done():
+	}
+	e.mu.Lock()
+	info = r.info()
+	e.mu.Unlock()
+	select {
+	case <-ch:
+		return info, nil
+	default:
+	}
+	if ctx.Err() != nil {
+		return info, ctx.Err()
+	}
+	return info, e.closedErr()
 }
 
 // Cancel asks a run to stop and undo its completed steps. A step under way
 // sees its context canceled; if it still completes, it is undone too.
 // Canceling a run that is compensating already changes nothing.
 func (e *Engine) Cancel(id string) error {
-	e.smu.Lock()
-	defer e.smu.Unlock()
+	e.cancMu.Lock()
+	defer e.cancMu.Unlock()
 	e.mu.Lock()
 	r := e.runs[id]
 	switch {
@@ -298,6 +318,8 @@ func (e *Engine) Cancel(id string) error {
 		return nil
 	}
 	e.mu.Unlock()
+	// The run can finish, or Compact drop it, before the record is written;
+	// the writer checks again and answers ErrFinished or ErrNotFound.
 	if err := e.commit(&Record{Type: recCancel, Run: id}); err != nil {
 		return err
 	}
@@ -314,9 +336,10 @@ func (e *Engine) Cancel(id string) error {
 	return nil
 }
 
-// Compact rewrites the journal with one record per run, and leaves out runs
-// that finished before the given time (a zero time keeps them all). It runs
-// while the engine works; appends wait for it.
+// Compact rewrites the journal with a snapshot of each run, and leaves out
+// runs that finished before the given time (a zero time keeps them all). It
+// runs while the engine works; writes wait for it. A dropped run is
+// forgotten: its ID can be started again.
 func (e *Engine) Compact(dropFinishedBefore time.Time) error {
 	e.jmu.Lock()
 	defer e.jmu.Unlock()
@@ -327,18 +350,27 @@ func (e *Engine) Compact(dropFinishedBefore time.Time) error {
 	}
 	var frames []byte
 	var keep, drop []string
+	now := e.opts.Now().UTC()
 	for _, id := range e.order {
 		r := e.runs[id]
 		if r.Status.Finished() && !dropFinishedBefore.IsZero() && r.Ended.Before(dropFinishedBefore) {
 			drop = append(drop, id)
 			continue
 		}
-		f, err := encode(&Record{Type: recSnapshot, Run: id, At: e.opts.Now(), Snap: r.snap()})
-		if err != nil {
-			e.mu.Unlock()
-			return err
+		recs := []*Record{{Type: recSnapshot, Run: id, At: now, Snap: r.snap()}}
+		for _, c := range r.Done {
+			if len(c.State) > 0 {
+				recs = append(recs, &Record{Type: recSState, Run: id, At: now, Seq: c.Seq, State: c.State})
+			}
 		}
-		frames = append(frames, f...)
+		for _, rec := range recs {
+			f, err := encode(rec)
+			if err != nil {
+				e.mu.Unlock()
+				return fmt.Errorf("flowchassis: compacting run %q: %w", id, err)
+			}
+			frames = append(frames, f...)
+		}
 		keep = append(keep, id)
 	}
 	e.mu.Unlock()
@@ -354,22 +386,24 @@ func (e *Engine) Compact(dropFinishedBefore time.Time) error {
 	return nil
 }
 
-// Close stops the engine. Steps under way see their context canceled; a step
-// that returns an error because of it is not counted as failed, and runs
-// again when the journal is next opened. Close waits for them to return.
+// Close stops the engine. Steps under way see their context canceled. A step
+// that returns an error because of it is not counted as failed and its
+// attempt doesn't count; it runs again when the journal is next opened. A
+// step that completes anyway is recorded. Close waits for them to return.
 func (e *Engine) Close() error {
 	e.mu.Lock()
-	if e.closed {
+	if e.closed || (e.closing && e.stopErr == nil) {
 		e.mu.Unlock()
 		return nil
 	}
-	e.closed = true
 	e.closing = true
 	e.cancel()
 	e.cond.Broadcast()
 	e.mu.Unlock()
 	e.wg.Wait()
+
 	e.mu.Lock()
+	e.closed = true
 	for _, r := range e.runs {
 		if r.timer != nil {
 			r.timer.Stop()
@@ -377,7 +411,9 @@ func (e *Engine) Close() error {
 		}
 	}
 	e.mu.Unlock()
-	e.jmu.Lock()
+	e.jmu.Lock() // every commit under way has returned
+	close(e.wstop)
+	<-e.wdone
 	err := e.store.Close()
 	e.jmu.Unlock()
 	if e.lock != nil {
@@ -409,8 +445,8 @@ type pending struct {
 }
 
 // commit writes a record to the journal, flushed to disk, and then applies
-// it to the run in memory. Records committed at the same time share one
-// flush. It returns once the record is durable and applied.
+// it to the run in memory. It returns once the record is durable and
+// applied, or with the reason it wasn't written.
 func (e *Engine) commit(rec *Record) error {
 	e.jmu.RLock()
 	defer e.jmu.RUnlock()
@@ -429,65 +465,120 @@ func (e *Engine) commit(rec *Record) error {
 	p := &pending{rec: rec, frame: frame, done: make(chan error, 1)}
 	e.qmu.Lock()
 	e.queue = append(e.queue, p)
-	if e.flushing {
-		e.qmu.Unlock()
-		return <-p.done
-	}
-	e.flushing = true
-	for {
-		batch := e.queue
-		e.queue = nil
-		e.qmu.Unlock()
-		e.flush(batch)
-		e.qmu.Lock()
-		if len(e.queue) == 0 {
-			e.flushing = false
-			e.qmu.Unlock()
-			break
-		}
+	e.qmu.Unlock()
+	select {
+	case e.kick <- struct{}{}:
+	default:
 	}
 	return <-p.done
 }
 
-// flush appends a batch of records with one write and one flush, applies
-// them in order, and tells each committer.
-func (e *Engine) flush(batch []*pending) {
-	var frames []byte
-	if len(batch) == 1 {
-		frames = batch[0].frame
-	} else {
-		for _, p := range batch {
-			frames = append(frames, p.frame...)
+// writer is the one goroutine that writes the journal.
+func (e *Engine) writer() {
+	defer close(e.wdone)
+	for {
+		select {
+		case <-e.kick:
+		case <-e.wstop:
+			return
+		}
+		for {
+			e.qmu.Lock()
+			batch := e.queue
+			e.queue = nil
+			e.qmu.Unlock()
+			if len(batch) == 0 {
+				break
+			}
+			e.flush(batch)
 		}
 	}
-	if err := e.store.Append(frames); err != nil {
-		e.stop(err)
-		err = e.Err()
+}
+
+// flush checks a batch of records against the runs, appends the ones that
+// still apply with one write and one flush, applies them in order, and
+// answers each committer.
+func (e *Engine) flush(batch []*pending) {
+	e.mu.Lock()
+	if e.stopErr != nil {
+		err := e.stopErr
+		e.mu.Unlock()
 		for _, p := range batch {
 			p.done <- err
 		}
 		return
 	}
-	e.mu.Lock()
+	// A record is written only if it still makes sense: a start for a new
+	// run, anything else for a run that exists and hasn't finished, counting
+	// the records ahead of it in the batch.
+	started := map[string]bool{}
+	ended := map[string]bool{}
+	var ok []*pending
+	var frames []byte
 	for _, p := range batch {
-		r, err := apply(e.runs, p.rec)
+		id := p.rec.Run
+		r := e.runs[id]
+		var err error
+		switch {
+		case p.rec.Type == recStart:
+			if r != nil || started[id] {
+				err = fmt.Errorf("%w: %q", ErrConflict, id)
+			}
+			started[id] = true
+		case r == nil && !started[id]:
+			err = fmt.Errorf("%w: %q", ErrNotFound, id)
+		case ended[id] || (r != nil && r.Status.Finished()):
+			err = fmt.Errorf("%w: %q", ErrFinished, id)
+		}
 		if err != nil {
-			// The engine only writes records apply accepts.
-			e.mu.Unlock()
-			panic(err)
+			p.done <- err
+			continue
 		}
-		switch p.rec.Type {
-		case recStart:
-			e.order = append(e.order, r.id)
-			e.schedule(r)
-		case recEnd:
-			close(r.finished)
+		if endsRun(p.rec) {
+			ended[id] = true
 		}
+		ok = append(ok, p)
+		frames = append(frames, p.frame...)
 	}
 	e.mu.Unlock()
-	for _, p := range batch {
+	if len(ok) == 0 {
+		return
+	}
+	if err := e.store.Append(frames); err != nil {
+		e.stop(err)
+		err = e.Err()
+		for _, p := range ok {
+			p.done <- err
+		}
+		return
+	}
+	e.mu.Lock()
+	for i, p := range ok {
+		r, err := apply(e.runs, p.rec)
+		if err != nil {
+			// The checks above should make this impossible. Stop rather than
+			// act on memory that no longer matches the journal.
+			e.mu.Unlock()
+			e.stop(fmt.Errorf("applying a written record: %w", err))
+			err = e.Err()
+			for _, q := range ok[i:] {
+				q.done <- err
+			}
+			return
+		}
+		if p.rec.Type == recStart {
+			e.order = append(e.order, r.id)
+			e.schedule(r)
+		}
+		r.markFinished()
 		p.done <- nil
 	}
+	e.mu.Unlock()
+}
+
+// endsRun reports whether a record finishes its run.
+func endsRun(rec *Record) bool {
+	return rec.Type == recEnd || (rec.Type == recUFail && rec.Final)
 }
 
 // stop halts the engine after a journal write failed: nothing more is
@@ -593,9 +684,17 @@ func (e *Engine) stepOne(r *run, d *flowDef) bool {
 	}
 	step := d.byName[r.Cursor]
 	if step == nil {
-		name := r.Cursor
+		name, attempt := r.Cursor, r.Attempt
 		e.mu.Unlock()
-		return e.failRun(r, name, r.Attempt, fmt.Errorf("flow %q has no step %q", r.Flow, name))
+		return e.failRun(r, name, attempt, fmt.Errorf("flow %q has no step %q", r.Flow, name))
+	}
+	policy := step.Retry.or(e.opts.Retry)
+	if r.Attempt >= policy.attempts() {
+		// Every attempt so far was cut off by a crash: a step that brings the
+		// process down doesn't get to loop forever.
+		n := r.Attempt
+		e.mu.Unlock()
+		return e.failRun(r, step.Name, n, fmt.Errorf("gave up after %d attempts, the last of them cut off before it finished", n))
 	}
 	attempt, seq := r.Attempt+1, len(r.Done)+1
 	ctx, cancel := context.WithCancel(e.ctx)
@@ -616,8 +715,9 @@ func (e *Engine) stepOne(r *run, d *flowDef) bool {
 	e.clearCancel(r)
 
 	if err != nil && e.ctx.Err() != nil {
-		// The engine is closing: leave the attempt open. It runs again
-		// after the next Open.
+		// Close cut the attempt off. It doesn't count, and runs again after
+		// the next Open.
+		e.commit(&Record{Type: recYield, Run: r.id, Step: step.Name, Seq: seq, Attempt: attempt})
 		return false
 	}
 	if err == nil {
@@ -634,7 +734,6 @@ func (e *Engine) stepOne(r *run, d *flowDef) bool {
 	e.mu.Lock()
 	canceled := r.Cancel
 	e.mu.Unlock()
-	policy := step.Retry.or(e.opts.Retry)
 	if IsPermanent(err) || attempt >= policy.attempts() || canceled {
 		return e.failRun(r, step.Name, attempt, err)
 	}
@@ -643,13 +742,9 @@ func (e *Engine) stepOne(r *run, d *flowDef) bool {
 	return false
 }
 
-// failRun records a step's final failure and starts compensation.
+// failRun records a step's final failure, which starts compensation.
 func (e *Engine) failRun(r *run, step string, attempt int, err error) bool {
-	msg := err.Error()
-	if e.commit(&Record{Type: recFail, Run: r.id, Step: step, Attempt: attempt, Error: msg, Final: true}) != nil {
-		return false
-	}
-	return e.commit(&Record{Type: recComp, Run: r.id, Error: fmt.Sprintf("step %s: %s", step, msg)}) == nil
+	return e.commit(&Record{Type: recFail, Run: r.id, Step: step, Attempt: attempt, Error: err.Error(), Final: true}) == nil
 }
 
 // undoOne runs one attempt of the next undo. Called with mu held; returns
@@ -674,13 +769,20 @@ func (e *Engine) undoOne(r *run, d *flowDef) bool {
 	if step == nil {
 		e.mu.Unlock()
 		e.commit(&Record{Type: recUFail, Run: r.id, Step: done.Step, Seq: done.Seq, Error: errNoUndo.Error(), Final: true})
-		e.commit(&Record{Type: recEnd, Run: r.id, Status: Failed, Error: fmt.Sprintf("undo %s: %v", done.Step, errNoUndo)})
 		return false
 	}
-	attempt := r.UAttempt + 1
+	prior := r.UAttempt
 	if i != r.UndoNext {
-		attempt = 1
+		prior = 0
 	}
+	policy := step.Retry.or(e.opts.Retry)
+	if prior >= policy.attempts() {
+		e.mu.Unlock()
+		e.commit(&Record{Type: recUFail, Run: r.id, Step: step.Name, Seq: done.Seq, Attempt: prior, Final: true,
+			Error: fmt.Sprintf("gave up after %d attempts, the last of them cut off before it finished", prior)})
+		return false
+	}
+	attempt := prior + 1
 	c := &Ctx{
 		Context: e.ctx, Run: r.id, Flow: r.Flow, Step: step.Name, Attempt: attempt, Seq: done.Seq,
 		Key:   r.id + "/" + step.Name + "/" + strconv.Itoa(done.Seq) + "/undo",
@@ -693,17 +795,14 @@ func (e *Engine) undoOne(r *run, d *flowDef) bool {
 	}
 	err := call(step.Undo, c)
 	if err != nil && e.ctx.Err() != nil {
+		e.commit(&Record{Type: recUYield, Run: r.id, Step: step.Name, Seq: done.Seq, Attempt: attempt})
 		return false
 	}
 	if err == nil {
 		return e.commit(&Record{Type: recUDone, Run: r.id, Step: step.Name, Seq: done.Seq}) == nil
 	}
-	policy := step.Retry.or(e.opts.Retry)
 	if IsPermanent(err) || attempt >= policy.attempts() {
-		if e.commit(&Record{Type: recUFail, Run: r.id, Step: step.Name, Seq: done.Seq, Attempt: attempt, Error: err.Error(), Final: true}) != nil {
-			return false
-		}
-		e.commit(&Record{Type: recEnd, Run: r.id, Status: Failed, Error: fmt.Sprintf("undo %s: %s", step.Name, err)})
+		e.commit(&Record{Type: recUFail, Run: r.id, Step: step.Name, Seq: done.Seq, Attempt: attempt, Error: err.Error(), Final: true})
 		return false
 	}
 	at := e.opts.Now().Add(policy.delay(attempt)).UTC()

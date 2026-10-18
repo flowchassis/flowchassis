@@ -67,7 +67,7 @@ def main():
 
         journal = os.path.join(demo, "orders.journal")
         out = run("check", journal).stdout
-        if "every checksum good" not in out or "40 runs" not in out:
+        if "OK: every record has a good checksum" not in out or "40 runs" not in out:
             fail(f"check: {out}")
 
         listed = json.loads(run("runs", "-status", "compensated", "-json", journal).stdout) or []

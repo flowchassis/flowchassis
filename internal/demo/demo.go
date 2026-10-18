@@ -36,6 +36,9 @@ const (
 // over it.
 var Steps = []string{"reserve", "charge", "receipt", "ship", "notify"}
 
+// MaxAttempts is the order flow's attempt limit for each step and undo.
+const MaxAttempts = 10
+
 // RunID names the i-th order of a batch, from 1.
 func RunID(i int) string { return fmt.Sprintf("order-%04d", i) }
 
@@ -53,8 +56,9 @@ func ShipFails(run string) bool { return hash(run)%4 == 0 }
 // attempts, so its run must retry. About one order in five.
 func ChargeFlaky(run string) bool { return hash(run)%5 == 1 }
 
-// Ledger is an append-only file of effect lines: "do STEP RUN ATTEMPT" or
-// "undo STEP RUN ATTEMPT". Each line is written with one append and flushed
+// Ledger is an append-only file of effect lines: "do STEP RUN ATTEMPT",
+// "undo STEP RUN ATTEMPT", or "try ship RUN ATTEMPT" for a shipping attempt
+// that is about to be refused. Each line is written with one append and flushed
 // before the step returns.
 type Ledger struct{ f *os.File }
 
@@ -150,7 +154,10 @@ func OrderFlow(l *Ledger, pause time.Duration) flowchassis.Flow {
 			return l.write("undo", c)
 		}
 	}
-	retry := flowchassis.RetryPolicy{MaxAttempts: 4, Backoff: 2 * time.Millisecond, MaxBackoff: 20 * time.Millisecond}
+	// Attempts cut off by kills count toward MaxAttempts, so it leaves room
+	// for several kills landing in one step on top of the flaky charge's two
+	// failures.
+	retry := flowchassis.RetryPolicy{MaxAttempts: MaxAttempts, Backoff: 2 * time.Millisecond, MaxBackoff: 20 * time.Millisecond}
 	return flowchassis.Flow{Name: FlowName, Steps: []flowchassis.Step{
 		{Name: "reserve", Do: do("reserve", nil), Undo: undo("reserve"), Retry: retry},
 		{Name: "charge", Do: do("charge", func(c *flowchassis.Ctx) error {
@@ -162,6 +169,12 @@ func OrderFlow(l *Ledger, pause time.Duration) flowchassis.Flow {
 		{Name: "receipt", Do: do("receipt", nil), Retry: retry},
 		{Name: "ship", Do: do("ship", func(c *flowchassis.Ctx) error {
 			if ShipFails(c.Run) {
+				// The attempt leaves a trace before it fails for good, so the
+				// checks can see if a step that failed for good ever runs
+				// again.
+				if err := l.write("try", c); err != nil {
+					return err
+				}
 				return flowchassis.Permanent(errors.New("carrier refused the address"))
 			}
 			return nil
@@ -316,35 +329,93 @@ func Verify(dir string, n int, r *Report) {
 		return
 	}
 	r.Effects = len(effects)
-	open := map[string]string{} // run -> type of its attempt under way
+	byRun := map[string]flowchassis.RunInfo{}
+	for _, info := range runs {
+		byRun[info.ID] = info
+	}
+
+	// Every attempt the journal records, with how it ended: done, failed,
+	// failed for good, yielded to a shutdown, or cut off (a kill landed
+	// before it ended).
+	type attempt struct {
+		kind, step string // kind is "do" or "undo"
+		number     int
+		end        string
+		effects    int
+	}
+	attempts := map[string][]*attempt{}
+	open := map[string]*attempt{}
+	p := len(r.Problems)
 	for i := range recs {
 		rec := &recs[i]
+		cur := open[rec.Run]
 		switch rec.Type {
-		case "fail":
-			if !rec.Final {
-				r.Retries++
-			}
-			delete(open, rec.Run)
 		case "begin", "ubegin":
-			if t, ok := open[rec.Run]; ok {
-				if t == "begin" {
+			if cur != nil {
+				cur.end = "cut"
+				if cur.kind == "do" {
 					r.Interrupted++
 				} else {
 					r.InterruptedU++
 				}
 			}
-			open[rec.Run] = rec.Type
-		case "done", "udone", "ufail":
+			kind := "do"
+			if rec.Type == "ubegin" {
+				kind = "undo"
+			}
+			for _, a := range attempts[rec.Run] {
+				if a.kind == kind && a.step == rec.Step && a.end == "final" {
+					problem("%s: %s %s began again after failing for good", rec.Run, kind, rec.Step)
+				}
+			}
+			if rec.Attempt > MaxAttempts {
+				problem("%s: %s %s attempt %d, over the limit of %d", rec.Run, kind, rec.Step, rec.Attempt, MaxAttempts)
+			}
+			a := &attempt{kind: kind, step: rec.Step, number: rec.Attempt}
+			attempts[rec.Run] = append(attempts[rec.Run], a)
+			open[rec.Run] = a
+		case "done", "udone", "fail", "ufail", "yield", "uyield":
+			if cur == nil {
+				// A final failure without an attempt is a crash loop giving
+				// up; anything else is out of place.
+				if (rec.Type == "fail" || rec.Type == "ufail") && rec.Final {
+					break
+				}
+				problem("%s: %s record with no attempt under way", rec.Run, rec.Type)
+				break
+			}
+			switch {
+			case rec.Type == "done" || rec.Type == "udone":
+				cur.end = "done"
+			case rec.Type == "yield" || rec.Type == "uyield":
+				cur.end = "yield"
+			case rec.Final:
+				cur.end = "final"
+			default:
+				cur.end = "fail"
+				r.Retries++
+			}
 			delete(open, rec.Run)
 		}
 	}
-
-	byRun := map[string]RunInfoLite{}
-	for _, info := range runs {
-		byRun[info.ID] = RunInfoLite{Status: string(info.Status), Done: info.Done, Undone: info.Undone}
+	if len(open) > 0 {
+		problem("%d runs still have an attempt under way", len(open))
 	}
+	// Within one step, attempt numbers only go up, except that an attempt
+	// yielded to a shutdown is given back.
+	for id, list := range attempts {
+		last := map[string]*attempt{}
+		for _, a := range list {
+			k := a.kind + " " + a.step
+			if prev := last[k]; prev != nil && a.number <= prev.number && prev.end != "yield" && prev.end != "done" && prev.end != "udone" {
+				problem("%s: %s attempt %d after attempt %d", id, k, a.number, prev.number)
+			}
+			last[k] = a
+		}
+	}
+	check("attempt numbers only go up, stay within the limit, and nothing runs again after failing for good", p)
 
-	p := len(r.Problems)
+	p = len(r.Problems)
 	if len(runs) != n {
 		problem("the journal holds %d runs, not %d", len(runs), n)
 	}
@@ -356,11 +427,11 @@ func Verify(dir string, n int, r *Report) {
 			continue
 		}
 		switch info.Status {
-		case "completed":
+		case flowchassis.Completed:
 			r.Completed++
-		case "compensated":
+		case flowchassis.Compensated:
 			r.Compensated++
-		case "failed":
+		case flowchassis.Failed:
 			r.Failed++
 		default:
 			r.Unfinished++
@@ -371,9 +442,9 @@ func Verify(dir string, n int, r *Report) {
 	p = len(r.Problems)
 	for i := 1; i <= n; i++ {
 		id := RunID(i)
-		want := "completed"
+		want := flowchassis.Completed
 		if ShipFails(id) {
-			want = "compensated"
+			want = flowchassis.Compensated
 		}
 		if got := byRun[id].Status; got != want {
 			problem("%s ended %s, not %s", id, got, want)
@@ -381,49 +452,76 @@ func Verify(dir string, n int, r *Report) {
 	}
 	check("each order ended the way its own rules say: shipped orders completed, refused ones compensated", p)
 
-	// What the ledger says happened, per run and step: distinct effects
-	// (what an idempotent service would keep) and how many lines (attempts
-	// that got as far as the effect).
+	// Every ledger line belongs to an attempt the journal recorded: same
+	// run, step and attempt number. Each attempt leaves at most one line.
+	p = len(r.Problems)
 	type key struct{ kind, step, run string }
-	count := map[key]int{}
-	order := map[key]int{} // position of the last line, to check undo came after do
-	for i, e := range effects {
+	lines := map[key][]*attempt{}
+	for _, e := range effects {
+		kind := e.Kind
+		if kind == "try" {
+			kind = "do"
+		}
+		var match *attempt
+		for _, a := range attempts[e.Run] {
+			if a.kind == kind && a.step == e.Step && a.number == e.Attempt {
+				match = a // the last one with that number, if a yield repeated it
+			}
+		}
+		if match == nil {
+			problem("%s: ledger has %s %s attempt %d, which the journal never began", e.Run, e.Kind, e.Step, e.Attempt)
+			continue
+		}
+		match.effects++
+		if match.effects > 1 {
+			problem("%s: %s %s attempt %d left %d effects", e.Run, e.Kind, e.Step, e.Attempt, match.effects)
+		}
 		k := key{e.Kind, e.Step, e.Run}
-		count[k]++
-		order[k] = i
+		lines[k] = append(lines[k], match)
 	}
-	for k, c := range count {
-		if c > 1 {
-			r.Repeated += c - 1
+	check("every effect in the ledger belongs to an attempt the journal recorded, one effect at most per attempt", p)
+
+	// An effect repeats only when a kill cut its attempt off after the effect
+	// and before the checkpoint: every line but the last of each effect must
+	// belong to a cut-off attempt.
+	p = len(r.Problems)
+	for k, list := range lines {
+		for _, a := range list[:len(list)-1] {
+			r.Repeated++
 			if k.kind == "undo" {
-				r.RepeatedUndo += c - 1
+				r.RepeatedUndo++
+			}
+			if a.end != "cut" && a.end != "yield" {
+				problem("%s: %s %s repeated, though its attempt %d ended %q", k.run, k.kind, k.step, a.number, a.end)
 			}
 		}
 	}
+	check("each repeated effect comes from an attempt a kill cut off between the effect and its checkpoint", p)
 
 	p = len(r.Problems)
 	for i := 1; i <= n; i++ {
 		id := RunID(i)
 		info := byRun[id]
 		var wantDo, wantUndo []string
-		if ShipFails(id) {
+		refused := ShipFails(id)
+		if refused {
 			wantDo = []string{"reserve", "charge", "receipt"}
 			wantUndo = []string{"charge", "reserve"}
 		} else {
 			wantDo = Steps
 		}
 		for _, s := range Steps {
-			has := count[key{"do", s, id}] > 0
+			has := len(lines[key{"do", s, id}]) > 0
 			if has != contains(wantDo, s) {
 				problem("%s: ledger has do %s = %v, want %v", id, s, has, !has)
 			}
-			undone := count[key{"undo", s, id}] > 0
+			undone := len(lines[key{"undo", s, id}]) > 0
 			if undone != contains(wantUndo, s) {
 				problem("%s: ledger has undo %s = %v, want %v", id, s, undone, !undone)
 			}
-			if undone && order[key{"undo", s, id}] < order[key{"do", s, id}] {
-				problem("%s: undo %s was written before its do", id, s)
-			}
+		}
+		if tried := len(lines[key{"try", "ship", id}]) > 0; tried != refused {
+			problem("%s: ledger has a refused shipping attempt = %v, want %v", id, tried, refused)
 		}
 		if !equal(info.Done, wantDo) {
 			problem("%s: journal says done %v, want %v", id, info.Done, wantDo)
@@ -432,12 +530,9 @@ func Verify(dir string, n int, r *Report) {
 			problem("%s: journal says undone %v, want %v", id, info.Undone, wantUndo)
 		}
 	}
-	check("every effect the journal records as done is in the ledger, and every ledger effect is in the journal", p)
-	check("compensation undid exactly the completed steps with an undo, newest first, after they were done", p)
+	check("the ledger and the journal agree on what each order did and undid", p)
 
 	p = len(r.Problems)
-	// Within one run, effects must follow the flow's order: no step's first
-	// effect before an earlier step's first effect.
 	first := map[key]int{}
 	for i, e := range effects {
 		k := key{e.Kind, e.Step, e.Run}
@@ -458,27 +553,19 @@ func Verify(dir string, n int, r *Report) {
 			}
 			last = pos
 		}
+		for _, s := range []string{"charge", "reserve"} {
+			u, ok := first[key{"undo", s, id}]
+			if ok && u < first[key{"do", s, id}] {
+				problem("%s: undo %s came before its do", id, s)
+			}
+		}
+		if u, ok := first[key{"undo", "reserve", id}]; ok && u < first[key{"undo", "charge", id}] {
+			problem("%s: reserve was undone before charge", id)
+		}
 	}
-	check("steps of each run happened in flow order", p)
-
-	p = len(r.Problems)
-	w := r.Workers
-	if w < 1 {
-		w = 1
-	}
-	if r.Repeated > r.Kills*w {
-		problem("%d repeated effects from %d kills of processes running %d orders at once: more than one per order a kill interrupted", r.Repeated, r.Kills, w)
-	}
-	check("an effect is repeated only when a kill interrupted its step, at most once per order in flight", p)
+	check("steps happened in flow order, and undos newest first after their steps", p)
 
 	r.OK = len(r.Problems) == 0 && r.Unfinished == 0 && r.Failed == 0
-}
-
-// RunInfoLite is the part of a run Verify looks at.
-type RunInfoLite struct {
-	Status string
-	Done   []string
-	Undone []string
 }
 
 func contains(list []string, s string) bool {

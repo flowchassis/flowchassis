@@ -161,8 +161,10 @@ A `Step` has a `Name`, a `Do`, an optional `Undo` and an optional `Retry`.
   as the step left it, even if later steps changed it. A step with no `Undo`
   is passed over.
 - **Retry** is a `RetryPolicy`: `MaxAttempts` (the first included),
-  `Backoff` (the first wait), `Multiplier` (default 2) and `MaxBackoff`. The
-  default is 3 attempts from 100 ms. Undo uses the same policy.
+  `Backoff` (the first wait), `Multiplier` and `MaxBackoff`. Fields left at
+  zero come from `Options.Retry`, then from the default of 3 attempts from
+  100 ms, doubling, except `MaxBackoff`, where zero means no cap. Undo uses
+  the same policy.
 
 Inside a step, `*Ctx` gives you:
 
@@ -194,16 +196,22 @@ fails at once and the run compensates.
 ### What happens when
 
 - **The process is killed during a step.** On the next start the step runs
-  again, attempt number one higher. Steps before it don't.
+  again, attempt number one higher. Steps before it don't. Killed attempts
+  count, so a step that crashes the process every time gives up at
+  `MaxAttempts` and the run compensates.
+- **`Close` is called during a step.** The step's context is canceled. If it
+  returns an error, the attempt is given back and the step runs again on the
+  next open as the same attempt. If it completes anyway, that is recorded.
 - **It is killed during an undo.** That undo runs again. Undos already done
   don't.
 - **It is killed while a step waits to retry.** The wait goes on from the time
   in the journal.
 - **The last write was torn by a crash or power cut.** The torn record is cut
-  off on open and the run carries on from the record before it.
+  off on open, kept in `JOURNAL.torn`, and the run carries on from the record
+  before it. A tear counts as one only if nothing whole follows it.
 - **The journal is damaged anywhere else.** `Open` refuses it with
-  `ErrCorrupt` rather than quietly drop what comes after. `flowchassis check`
-  says where.
+  `ErrCorrupt`, and leaves the file as it is, rather than drop what comes
+  after. `flowchassis check` says where.
 - **The disk is full, or a write fails.** The engine stops running steps and
   `Err` says why. It never acts on a step it couldn't record. Fix the disk,
   open the journal again, and runs resume from the last good record.
@@ -217,7 +225,7 @@ fails at once and the run compensates.
 flowchassis runs orders.journal                 every run: status, step, attempt, error
 flowchassis runs orders.journal -status failed  just the ones that need a person
 flowchassis show orders.journal order-1001      one run: state, input and full history
-flowchassis check orders.journal                verify every record's checksum
+flowchassis check orders.journal                verify every record's checksum (exit 0, 1 damaged, 3 torn)
 flowchassis compact orders.journal -drop-finished-before 720h
 flowchassis demo                                the crash demo, described below
 ```
@@ -285,6 +293,9 @@ standard library. The `flowchassis` binary is 2.7 MB, static and stripped.
   Several programs need several journals.
 - **Steps run at least once, not exactly once.** Use `Key` with the services
   you call.
+- **Compaction forgets.** A finished run that `Compact` drops is gone, and its
+  ID can be started again. Keep finished runs for as long as a caller might
+  retry a `Start`.
 - **The state is for small things.** IDs, references, amounts. Each step's
   state is written whole with its checkpoint, up to 16 MB a record.
 - **No graphical designer, dashboard or server.** That's the point.
