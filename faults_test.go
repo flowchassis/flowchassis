@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -66,11 +67,12 @@ func crash(t *testing.T, runs, kills, workers int, pause time.Duration, seed int
 	// which the contract requires; on a machine where processes start
 	// slowly (Windows) kills can keep landing on the same few orders.
 	wantDone, _ := demo.Expected(runs)
-	if r.Completed+r.Compensated != runs || r.Completed < wantDone-r.GaveUp {
-		t.Fatalf("%d completed, %d compensated, %d gave up; want %d completed less those that gave up", r.Completed, r.Compensated, r.GaveUp, wantDone)
+	if r.Completed+r.Compensated+r.Failed != runs || r.Failed != r.GaveUpUndo || r.Completed < wantDone-r.GaveUp-r.GaveUpUndo {
+		t.Fatalf("%d completed, %d compensated, %d failed; %d gave up on a step, %d on an undo; want %d completed less those that gave up, and failed only from undos that gave up",
+			r.Completed, r.Compensated, r.Failed, r.GaveUp, r.GaveUpUndo, wantDone)
 	}
-	if r.GaveUp > 0 {
-		t.Logf("%d orders gave up after %d attempts cut off by kills, and compensated", r.GaveUp, demo.MaxAttempts)
+	if r.GaveUp > 0 || r.GaveUpUndo > 0 {
+		t.Logf("%d orders gave up on a step and compensated, %d gave up on an undo and failed, after %d attempts cut off by kills", r.GaveUp, r.GaveUpUndo, demo.MaxAttempts)
 	}
 	// The journal checks clean with the reader tools use.
 	if _, torn, err := flowchassis.ReadJournal(dir + "/" + demo.JournalName); err != nil || torn {
@@ -107,5 +109,81 @@ func TestKilledWorkerDuringCompensation(t *testing.T) {
 	}
 	if cut == 0 {
 		t.Fatal("no kill landed inside an undo in six batches")
+	}
+}
+
+// A crash loop inside an undo: a step is cut off by kills MaxAttempts times,
+// the run gives up and compensates, and then the undo is cut off
+// MaxAttempts times too. The engine ends the run failed, as the contract
+// says, and the crash demo's checks must accept that rather than call it a
+// problem. (Seen once on a slow Windows runner: 1 order in 300.)
+func TestVerifyAcceptsAnUndoCrashLoop(t *testing.T) {
+	dir := t.TempDir()
+	run := demo.RunID(1)
+	if demo.ShipFails(run) {
+		t.Fatal("pick an order whose shipping isn't refused")
+	}
+	s := flowchassis.NewFileStore(filepath.Join(dir, demo.JournalName))
+	if _, err := s.Load(); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	charge := "charge"
+	var recs []*flowchassis.Record
+	add := func(r flowchassis.Record) { r.Run, r.At = run, now; recs = append(recs, &r) }
+	add(flowchassis.Record{Type: "start", Flow: demo.FlowName, Input: []byte(run)})
+	add(flowchassis.Record{Type: "begin", Step: "reserve", Seq: 1, Attempt: 1})
+	add(flowchassis.Record{Type: "done", Step: "reserve", Seq: 1, Next: &charge})
+	for a := 1; a <= demo.MaxAttempts; a++ {
+		add(flowchassis.Record{Type: "begin", Step: "charge", Seq: 2, Attempt: a})
+	}
+	add(flowchassis.Record{Type: "fail", Step: "charge", Attempt: demo.MaxAttempts, Final: true,
+		Error: "gave up after 10 attempts, the last of them cut off before it finished"})
+	for a := 1; a <= demo.MaxAttempts; a++ {
+		add(flowchassis.Record{Type: "ubegin", Step: "reserve", Seq: 1, Attempt: a})
+	}
+	add(flowchassis.Record{Type: "ufail", Step: "reserve", Seq: 1, Attempt: demo.MaxAttempts, Final: true,
+		Error: "gave up after 10 attempts, the last of them cut off before it finished"})
+	var frames []byte
+	for _, r := range recs {
+		b, err := flowchassis.EncodeRecord(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		frames = append(frames, b...)
+	}
+	if err := s.Append(frames); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	// Kills landed after some effects: a charge and an undone reservation.
+	ledger := "do reserve " + run + " 1\ndo charge " + run + " 3\nundo reserve " + run + " 4\n"
+	if err := os.WriteFile(filepath.Join(dir, demo.LedgerName), []byte(ledger), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var r demo.Report
+	demo.Verify(dir, 1, &r)
+	if !r.OK || r.Failed != 1 || r.GaveUp != 1 || r.GaveUpUndo != 1 {
+		t.Fatalf("OK %v, failed %d, gave up %d, gave up on an undo %d; problems: %v", r.OK, r.Failed, r.GaveUp, r.GaveUpUndo, r.Problems)
+	}
+
+	// And a failed run with no undo crash loop behind it is still a problem.
+	recs = recs[:len(recs)-1]
+	recs = append(recs, &flowchassis.Record{Type: "ufail", Run: run, At: now, Step: "reserve", Seq: 1, Attempt: demo.MaxAttempts, Final: true, Error: "refused"})
+	frames = nil
+	for _, rec := range recs {
+		b, _ := flowchassis.EncodeRecord(rec)
+		frames = append(frames, b...)
+	}
+	os.Remove(filepath.Join(dir, demo.JournalName))
+	s = flowchassis.NewFileStore(filepath.Join(dir, demo.JournalName))
+	s.Load()
+	s.Append(frames)
+	s.Close()
+	r = demo.Report{}
+	demo.Verify(dir, 1, &r)
+	if r.OK {
+		t.Fatal("a run that failed for another reason passed the checks")
 	}
 }

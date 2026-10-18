@@ -229,6 +229,7 @@ type Report struct {
 	RepeatedUndo int      `json:"repeated_undos"`    // the part of Repeated that were undos
 	Interrupted  int      `json:"interrupted_steps"` // step attempts a kill cut off: begun in the journal, never done or failed
 	GaveUp       int      `json:"gave_up"`           // runs whose step kept being cut off until MaxAttempts, so they compensated
+	GaveUpUndo   int      `json:"gave_up_undo"`      // runs whose undo kept being cut off until MaxAttempts, so they failed
 	InterruptedU int      `json:"interrupted_undos"` // the same for undo attempts
 	Retries      int      `json:"retries"`           // failed attempts that were retried
 	JournalBytes int64    `json:"journal_bytes"`     // journal size at the end
@@ -350,6 +351,10 @@ func Verify(dir string, n int, r *Report) {
 	// gives up and compensates, as the contract says it must.
 	gaveUp := map[string]bool{}
 	gaveUpStep := map[string]string{} // the step it gave up on
+	// Runs where, during compensation, one undo was cut off by kills
+	// MaxAttempts times: the engine stops compensating and the run ends
+	// failed, as the contract says it must.
+	gaveUpUndo := map[string]string{} // the step whose undo it gave up on
 	p := len(r.Problems)
 	for i := range recs {
 		rec := &recs[i]
@@ -381,8 +386,12 @@ func Verify(dir string, n int, r *Report) {
 			open[rec.Run] = a
 		case "done", "udone", "fail", "ufail", "yield", "uyield":
 			if rec.Final && strings.HasPrefix(rec.Error, "gave up after") {
-				gaveUp[rec.Run] = true
-				gaveUpStep[rec.Run] = rec.Step
+				if rec.Type == "ufail" {
+					gaveUpUndo[rec.Run] = rec.Step
+				} else {
+					gaveUp[rec.Run] = true
+					gaveUpStep[rec.Run] = rec.Step
+				}
 			}
 			if cur == nil {
 				// A final failure without an attempt is a crash loop giving
@@ -455,12 +464,16 @@ func Verify(dir string, n int, r *Report) {
 		if ShipFails(id) || gaveUp[id] {
 			want = flowchassis.Compensated
 		}
+		if _, ok := gaveUpUndo[id]; ok {
+			want = flowchassis.Failed
+		}
 		if got := byRun[id].Status; got != want {
 			problem("%s ended %s, not %s", id, got, want)
 		}
 	}
 	r.GaveUp = len(gaveUp)
-	check("each order ended the way its own rules say: shipped orders completed, refused ones and crash loops that gave up compensated", p)
+	r.GaveUpUndo = len(gaveUpUndo)
+	check("each order ended the way its own rules say: shipped orders completed, refused ones and crash loops that gave up compensated, and a crash loop in an undo failed", p)
 
 	// Every ledger line belongs to an attempt the journal recorded: same
 	// run, step and attempt number. Each attempt leaves at most one line.
@@ -531,6 +544,18 @@ func Verify(dir string, n int, r *Report) {
 		default:
 			wantDo = Steps
 		}
+		// Compensation that gave up on an undo stopped there: undos before
+		// it are done, it and the ones after it aren't, though its cut-off
+		// attempts may have left lines.
+		stopAt, stopped := gaveUpUndo[id]
+		if stopped {
+			for i, s := range wantUndo {
+				if s == stopAt {
+					wantUndo = wantUndo[:i]
+					break
+				}
+			}
+		}
 		for _, s := range Steps {
 			has := len(lines[key{"do", s, id}]) > 0
 			// A step given up on never completed, so it isn't undone, but
@@ -542,7 +567,9 @@ func Verify(dir string, n int, r *Report) {
 				problem("%s: ledger has do %s = %v, want %v", id, s, has, !has)
 			}
 			undone := len(lines[key{"undo", s, id}]) > 0
-			if undone != contains(wantUndo, s) {
+			if stopped && undone && !contains(wantUndo, s) && s == stopAt {
+				// The undo given up on: its cut-off attempts left lines.
+			} else if undone != contains(wantUndo, s) {
 				problem("%s: ledger has undo %s = %v, want %v", id, s, undone, !undone)
 			}
 		}
@@ -591,7 +618,7 @@ func Verify(dir string, n int, r *Report) {
 	}
 	check("steps happened in flow order, and undos newest first after their steps", p)
 
-	r.OK = len(r.Problems) == 0 && r.Unfinished == 0 && r.Failed == 0
+	r.OK = len(r.Problems) == 0 && r.Unfinished == 0 && r.Failed == r.GaveUpUndo
 }
 
 func contains(list []string, s string) bool {
