@@ -32,7 +32,10 @@ run state machine: `apply` is the only place run state changes, used both on
 replay and while running), `engine.go` (scheduling, step and undo execution,
 group commit, Start, Cancel, Compact, Close), `lock_*.go` (flock, LockFileEx),
 `internal/demo` (the order flow, ledger, supervisor and checks behind the crash
-tests and `flowchassis demo`).
+tests and `flowchassis demo`), `examples/` (four runnable programs, signup,
+provision, media and webhook, each with a test, over fake services in
+`examples/internal/fake` that log their effects and honour idempotency keys;
+the site's case studies quote their code and output, so keep the two in step).
 
 Out of scope unless the owner decides otherwise: several processes sharing one
 journal, a server or network API, a graphical builder or dashboard, exactly-once
@@ -52,7 +55,9 @@ It needs Go and Python 3.
 FlowChassis.com is in `photozeitgeist/flowchassis.com` (October 2026): the Hugo
 Launch template, unchanged, with content and config values only. Pages: about,
 contact, quick start, download, reference. Posts: the launch, a plain-language
-explainer of workflow kernels and sagas, how it was tested, and the name.
+explainer of workflow kernels and sagas, how it was tested, the name, and four
+case studies tagged "case studies" (one per example program), linked from the
+Case Studies menu entry.
 Images are drawn into static/images. Every number comes from `test/results/`;
 when a recording changes a number, update the site too.
 

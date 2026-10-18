@@ -129,6 +129,24 @@ func main() {
 mistake. Runs already in the journal resume as soon as you `Register` their
 flow. There is no separate recovery call.
 
+## Examples
+
+Four complete programs in [examples](examples), each a common job with the
+outside services faked so it runs anywhere. Each prints what it calls and
+what happens, keeps its journal in a directory you can inspect with
+`flowchassis show`, and has a test that CI runs on every change.
+
+| Example | What it shows | Run it |
+|---|---|---|
+| [signup](examples/signup) | An account, its storage and a welcome email. A flaky mail provider is retried; a plan the storage can't serve deletes the account again | `go run ./examples/signup` |
+| [provision](examples/provision) | A VM, a DNS record, a certificate and a health check that waits for boot. A refused certificate tears down DNS and the VM; an undo that keeps failing leaves the run `failed` for a person | `go run ./examples/provision` |
+| [media](examples/media) | A long transcode done one segment per step with `Ctx.Next`. Kill it mid-way and run it again: it carries on at the segment it was on | `go run ./examples/media` |
+| [webhook](examples/webhook) | Signed deliveries to a real local HTTP server, with doubling waits between attempts. 410 Gone stops at once; an endpoint that stays down is dead-lettered after six tries | `go run ./examples/webhook` |
+
+The fake services in [examples/internal/fake](examples/internal/fake) keep a
+log of what they did and honour idempotency keys, as real providers' APIs do:
+a call with a key they've seen does nothing again.
+
 ## Reference
 
 ### Engine
